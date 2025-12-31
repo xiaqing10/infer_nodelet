@@ -1,0 +1,8 @@
+Package: @CPACK_PACKAGE_NAME@
+Version: @CPACK_PACKAGE_VERSION@
+Section: utils
+Priority: optional
+Maintainer: xiaqing@ehawkeye.cn
+Essential: no
+Architecture: @CPACK_PACKAGE_ARCHITECTURE@
+Description: @CPACK_PACKAGE_DESC@

@@ -1,0 +1,28 @@
+# Set up your params
+# 所有模型
+#det_engine_name: "/home/files/rvf/share/infer_nodelet/model/yolov8s_int8_20241219_zz.bmodel"
+#det_engine_name: "/home/files/rvf/share/infer_nodelet/model/yolov8s_int8_20241219_sx.bmodel"
+det_engine_name: "/home/files/rvf/share/infer_nodelet/model/m9-20251106.bmodel"
+#
+color_engine_name: "/home/files/rvf/share/infer_nodelet/model/resnet18_int8_20241219.bmodel"
+#color_engine_name: "/home/files/rvf/share/infer_nodelet/model/ls-resnet18.bmodel"
+abandon_engine_name: "/home/files/rvf/share/infer_nodelet/model/cons_spill.bmodel"
+vechile_color_rate: 15  # 车型检测的频率
+abandon_rate: 6  # 抛洒物检测的频率
+
+
+min_points_len: 30 # 轨迹保存的最小长度
+write_flag: true  # 是否保存轨迹结果
+write_path: "/data/rvf/nfsroot/" # 轨迹结果保存的位置 
+byte_track_config_file: "/home/files/rvf/share/infer_nodelet/config/bytetrack.yaml" # ByteTrack的配置文件
+
+test:
+  test_flag: false 
+  camera_type: "short"
+  camera_direction: "downstream"
+  receive_img_topic: "/k86_545/downstream/short_camera/image_raw"
+  publish_img_topic: "/test"
+  publish_img_result: "/test_ret"
+  publish_fps: "/test_fps"
+  receive_radar_topic: "/zk5_438/radar1_data_tracker_Project"
+    

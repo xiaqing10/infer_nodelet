@@ -1,0 +1,11 @@
+<launch>
+    <arg name="ns" default="mec_0000"/>
+    <group ns="$(arg ns)">
+      <node pkg="nodelet" type="nodelet" name="infer_nodelet_manager" args="manager" output="screen" />
+      <node pkg="nodelet" type="nodelet" name="infer_nodelet" args="load infer_ns/DataNodelet infer_nodelet_manager" output="screen" >
+         <rosparam command="load" file="$(find infer_nodelet)/config/infer.yaml" />
+         <rosparam command="load" file="$(find infer_nodelet)/config/bytetrack.yaml" />
+      </node> 
+   </group>
+</launch>
+

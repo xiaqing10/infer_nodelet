@@ -1,0 +1,8 @@
+<library path="libinfer_nodelet">
+    <class name="infer_ns/DataNodelet" type="infer_ns::DataNodelet" base_class_type="nodelet::Nodelet">
+        <description>
+            A video nodelet that publishes messages.
+        </description>
+    </class>
+</library>
+

@@ -1,0 +1,78 @@
+# install_hook.cmake.in
+# 这些值直接从 configure_file 传入
+set(PACKAGE_NAME "@CPACK_PACKAGE_NAME@")
+set(PACKAGE_VERSION "@CPACK_PACKAGE_VERSION@")
+set(PACKAGE_ARCH "@CPACK_PACKAGE_ARCHITECTURE@")
+set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_NAME}_${PACKAGE_VERSION}_${PACKAGE_ARCH}")
+
+
+# 计算文件名
+#set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}_${CPACK_PACKAGE_VERSION}_${CPACK_PACKAGE_ARCHITECTURE}")
+set(CPACK_DEBIAN_RELOCATE_DIR "@ROS_PACKGE_RELOCATE@")
+set(CPACK_OUTOUT_DIRECTORY  "${CMAKE_CURRENT_BINARY_DIR}/${CPACK_PACKAGE_FILE_NAME}")
+set(CPACK_SOURCE_DIR "@ROS_PACKGE_SOURCE_DIR@")
+ 
+#execute_process(
+#    COMMAND  echo "CPACK_PACKAGE_FILE_NAME=${CPACK_PACKAGE_FILE_NAME}"
+#    RESULT_VARIABLE msg
+#)
+message("Command execute result: ${msg}")
+message("CMAKE_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX}")
+message("CMAKE_CURRENT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}")
+message("CMAKE_CURRENT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}")
+message("CMAKE_SOURCE_DIR ${CMAKE_SOURCE_DIR}")
+#message("PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR}")
+message("CPACK_DEBIAN_RELOCATE_DIR ${CPACK_DEBIAN_RELOCATE_DIR}")
+message("CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
+message("CPACK_DEBIAN_RELOCATE_DIR ${CPACK_DEBIAN_RELOCATE_DIR}")
+
+message(WARNNING "delete cmake dir:  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/cmake")
+message(WARNNING " ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/python3/dist-packages/infer_nodelet/msg/__pycache__/")
+
+execute_process(
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/lib/python3             		    ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    #COMMAND  rm    -rf  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/python3/dist-packages/infer_nodelet/msg/__pycache__/
+    #file(REMOVE_RESUCSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/python3/dist-packages/infer_nodelet/msg/__pycache__/")
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/                   ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/
+    #COMMAND  rm    -rf  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/cmake
+    #file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/cmake")
+
+
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/control       ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/postinst       ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/postrm       ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/preinst       ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    )
+# clear
+file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/python3/dist-packages/infer_nodelet/msg/__pycache__/")
+file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/cmake")
+file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/home")
+
+if(EXISTS "${CMAKE_INSTALL_PREFIX}/lib/libinfer_nodelet.so")
+    execute_process(
+       COMMAND cp "${CMAKE_INSTALL_PREFIX}/lib/libinfer_nodelet.so" "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/libinfer_nodelet.so"
+       )
+    
+    # 设置正确的权限
+    execute_process(
+        COMMAND chmod 644 "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/libinfer_nodelet.so"
+    )
+endif()
+
+
+execute_process(
+    #COMMAND  cp    -ar ${CPACK_SOURCE_DIR}/package/deb/DEBIAN          ${CPACK_OUTOUT_DIRECTORY}
+    #execute_processCOMMAND  cp    -ar ${CPACK_SOURCE_DIR}/package/deb/etc             ${CPACK_OUTOUT_DIRECTORY}
+    COMMAND  dpkg  -b  ${CPACK_OUTOUT_DIRECTORY} "${CPACK_PACKAGE_FILE_NAME}.deb"
+    RESULT_VARIABLE msg
+)
+
+#execute_process(
+#    COMMAND  cp        ${CPACK_OUTOUT_DIRECTORY}.deb                   ${CMAKE_INSTALL_PREFIX}
+#    RESULT_VARIABLE msg
+#)
