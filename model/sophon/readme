@@ -1,0 +1,7 @@
+cons_spill.bmodel 抛洒物检测
+ls-resnet18.bmodel 专门针对山西的颜色分类优化
+resnet18_int8_20241219.bmodel 普通场景的颜色分类
+yolov8s_int8_20241219_sx.bmodel 山西的检测模型，场景是隧道
+yolov8s_int8_20241219_zz.bmodel 郑州的检测模型，场景是高速，密集车流
+m9-20251106.model 绵九的场景，主要是隧道. 1106补充了数据
+

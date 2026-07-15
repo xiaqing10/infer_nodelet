@@ -1,0 +1,40 @@
+# Set up your params
+det_engine_name: /home/files/rvf/share/infer_nodelet/model/yolov8n.om
+abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/abandon.om
+vechile_color_rate: 15
+abandon_rate: 6
+min_points_len: 40
+write_flag: false
+write_path: /home/files/infer_images/
+byte_track_config_file: /home/files/rvf/share/infer_nodelet/config/bytetrack.yaml
+traffic_analyzer:
+  enabled: false
+  templates_path: /data/rvf/nfsroot/templates
+  events_path: /data/rvf/nfsroot/events
+  stationary_frames: 30
+  stationary_threshold: 0.005
+  abnormal_speed_std_threshold: 3.0
+model:
+  - {det_class: 10, det_stride: 3, abandon_class: 3, abandon_stride: 3}
+test:
+  test_flag: false
+  camera_type: short
+  camera_direction: upstream
+  publish_img_topic: /test_img
+  publish_img_result: /test_ret
+  publish_fps: /test_fps
+  publish_img: true
+  draw_tracker: true
+  receive_radar_topic: /test_radar_data_tracker_Project
+  video_path: ""
+  receive_img_topic: /test
+camera_visual:
+  - {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}
+  - {direction: downstream, focal_type: short, publish_img: false, draw_tracker: true}
+  - {direction: downstream, focal_type: long, publish_img: false, draw_tracker: true}
+  - {direction: upstream, focal_type: long, publish_img: false, draw_tracker: true}
+rtsp:
+  enabled: false
+  streams:
+    - {url: "rtsp://192.168.1.100:554/stream1", camera_type: "short", camera_direction: "upstream"}
+    - {url: "rtsp://192.168.1.100:554/stream2", camera_type: "long",  camera_direction: "downstream"}

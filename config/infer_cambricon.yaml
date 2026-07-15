@@ -1,0 +1,57 @@
+# Set up your params
+det_engine_name: /home/files/rvf/share/infer_nodelet/model/dh-20251017.cambricon
+#det_engine_name: /home/files/rvf/share/infer_nodelet/model/m9-20251106.cambricon
+abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/abandon.cambricon
+vechile_color_rate: 15  # 车型检测的频率
+abandon_rate: 15  # 抛洒物检测的频率
+min_points_len: 40 # 轨迹保存的最小长度
+write_flag: false # 是否保存轨迹结果
+write_path: /data/rvf/infer_data/ # 轨迹结果保存的位置
+byte_track_config_file: /home/files/rvf/share/infer_nodelet/config/bytetrack.yaml # ByteTrack的配置文件
+
+
+# Traffic analysis configuration
+traffic_analyzer:
+  enabled: false
+  templates_path: /data/rvf/nfsroot/templates
+  events_path: /data/rvf/nfsroot/events
+  stationary_frames: 30
+  stationary_threshold: 0.005
+  abnormal_speed_std_threshold: 3.0
+
+# 模型参数模板（所有摄像头共用此配置）
+# mlu_infer_device 由代码自动检测设备数量后轮询分配，无需手动指定
+model:
+  - {
+    det_class: 10,
+    det_stride: 3,
+    abandon_class: 3,
+    abandon_stride: 3
+    }
+
+test:
+  test_flag: false
+  camera_type: short
+  camera_direction: upstream
+  publish_img_topic: /test_img
+  publish_img_result: /test_ret
+  publish_fps: /test_fps
+  publish_img: true
+  draw_tracker: true
+  receive_radar_topic: /test_radar_data_tracker_Project
+  # Test mode input source (choose one):
+  #   1) video_path: set to mp4 file path to read from video file
+  #   2) receive_img_topic: set to ROS topic name to subscribe (e.g. from rosbag)
+  video_path: ""
+  receive_img_topic: /test
+
+# Per-camera visualization config (non-test mode).
+# Only matching cameras will publish images and draw results.
+# Leave empty to disable all visualization (max performance).
+# Format: {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}
+camera_visual:
+  - {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}
+  - {direction: downstream, focal_type: short, publish_img: false, draw_tracker: true}
+  - {direction: downstream, focal_type: long, publish_img: false, draw_tracker: true}
+  - {direction: upstream, focal_type: long, publish_img: false, draw_tracker: true}
+

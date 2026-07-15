@@ -1,0 +1,18 @@
+<launch>
+  <env name="ROSCONSOLE_FORMAT" value="[${severity}] [${time}]: ${message}" />
+    <arg name="ns" default="mec_0000"/>
+      <group ns="$(arg ns)">
+         <node pkg="nodelet" type="nodelet" name="infer_nodelet_manager_new" args="manager" output="screen" />
+
+         <node pkg="nodelet" type="nodelet" name="infer_nodelet_new" args="load infer_ns/DataNodelet infer_nodelet_manager_new" output="screen" >
+            <rosparam command="load" file="$(find infer_nodelet)/config/infer.yaml" />
+         </node>
+
+         <!--
+         <node pkg="nodelet" type="nodelet" name="infer_rtsp"
+               args="load infer_ns/DataNodeletRtsp infer_nodelet_manager_new" output="screen" >
+            <rosparam command="load" file="$(find infer_nodelet)/config/infer.yaml" />
+         </node>
+         -->
+      </group>
+</launch>

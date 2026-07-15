@@ -1,0 +1,97 @@
+# install_hook.cmake.in
+cmake_policy(SET CMP0012 NEW)
+set(PACKAGE_NAME "@CPACK_PACKAGE_NAME@")
+set(PACKAGE_VERSION "@CPACK_PACKAGE_VERSION@")
+set(PACKAGE_ARCH "@CPACK_PACKAGE_ARCHITECTURE@")
+set(CPACK_PACKAGE_FILE_NAME "${PACKAGE_NAME}_${PACKAGE_VERSION}_${PACKAGE_ARCH}")
+
+set(CPACK_DEBIAN_RELOCATE_DIR "@ROS_PACKGE_RELOCATE@")
+set(CPACK_OUTOUT_DIRECTORY  "${CMAKE_CURRENT_BINARY_DIR}/${CPACK_PACKAGE_FILE_NAME}")
+set(CPACK_SOURCE_DIR "@ROS_PACKGE_SOURCE_DIR@")
+
+message("CMAKE_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX}")
+message("CMAKE_CURRENT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}")
+message("PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR}")
+message("CPACK_DEBIAN_RELOCATE_DIR ${CPACK_DEBIAN_RELOCATE_DIR}")
+message("CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
+
+execute_process(
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet
+    COMMAND  mkdir -p  ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/lib/python3              ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/config     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/launch     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/nodelet_plugins.xml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/package.xml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet
+)
+
+message("@ 1 CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
+
+if(@USE_CAMBRICON_CMAKE@)
+execute_process(
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libcndrv.so             ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libcnrt.so              ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libopencv_core.so.3.4   ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libopencv_imgcodecs.so.3.4 ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libopencv_imgproc.so.3.4   ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libopencv_highgui.so.3.4   ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+    COMMAND  cp     ${CMAKE_INSTALL_PREFIX}/lib/libopencv_videoio.so.3.4   ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/
+)
+endif()
+
+
+message("@ 2 CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
+# 复制平台对应的配置文件为 infer.yaml
+if(@USE_CAMBRICON_CMAKE@)
+execute_process(
+    COMMAND  cp    -ar ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer_cambricon.yaml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer.yaml
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/model/cambricon     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/model
+    )
+endif()
+
+if(@USE_ASCEND_CMAKE@)
+execute_process(
+    COMMAND  cp    -ar ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer_ascend.yaml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer.yaml
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/model/ascend     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/model
+    )
+endif()
+
+
+if(@USE_SOPHON_CMAKE@)
+execute_process(
+    COMMAND  cp    -ar ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer_sophon.yaml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer.yaml
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/model/sophon     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/model
+)
+endif()
+
+
+message("@ 4 CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
+
+execute_process(
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/control       ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/postinst      ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/postrm        ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+    COMMAND  cp    -ar ${CMAKE_CURRENT_BINARY_DIR}/infer_nodelet/cmake/preinst       ${CPACK_OUTOUT_DIRECTORY}/DEBIAN
+)
+
+file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/python3/dist-packages/infer_nodelet/msg/__pycache__/")
+file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/cmake")
+file(REMOVE_RECURSE "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/home")
+
+if(EXISTS "${CMAKE_INSTALL_PREFIX}/lib/libinfer_nodelet.so")
+    execute_process(
+       COMMAND cp "${CMAKE_INSTALL_PREFIX}/lib/libinfer_nodelet.so" "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/libinfer_nodelet.so"
+    )
+    execute_process(
+        COMMAND chmod 644 "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/libinfer_nodelet.so"
+    )
+endif()
+
+execute_process(
+    COMMAND  dpkg  -b  ${CPACK_OUTOUT_DIRECTORY} "${CPACK_PACKAGE_FILE_NAME}.deb"
+    RESULT_VARIABLE msg
+)

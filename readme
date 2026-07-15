@@ -1,0 +1,164 @@
+# infer_nodelet
+
+
+## v2.0.0 - 平台解绑，适用多个平台。目前是有cambricon & sophon。
+### 编译改两个文件，一个是cmakelist 一个是deb版本号
+
+
+## v1.0.6 - 推理后端解耦 & 交通事件分析 & 日志优化
+
+### 新增功能
+
+#### 1. 推理后端解耦 (IDetector 接口)
+- 新增 `include/i_detector.h`：纯虚接口 `IDetector`，定义 `init()` / `detect()` / `destroy()` 标准接口
+- 新增 `include/cambricon_detector.h` + `src/cambricon_detector.cpp`：`CambriconDetector` 继承 `IDetector`，封装寒武纪 MLU 推理
+- CMakeLists.txt 支持条件编译 `USE_CAMBRICON` / `USE_SOPHON` / `USE_RKNN`（互斥），方便切换推理后端
+- 后端扩展方式：新建 `include/sophon_detector.h` + `src/sophon_detector.cpp` 实现 `IDetector` 接口即可
+
+#### 2. 交通事件分析 (TrafficAnalyzer)
+- 新增 `src/traffic_analyzer.h` + `src/traffic_analyzer.cpp`：交通事件分析引擎
+- 支持 **逆行检测** (wrong-way)：基于车道方向模板匹配
+- 支持 **静止检测** (stationary)：基于帧间位移阈值
+- 支持 **模板自动学习**：启动时加载已有模板，不存在则从昨日轨迹自动学习
+- 每个视角（camera_type + camera_direction）独立维护模板
+- 事件保存为 json + jpg，图片上绘制轨迹
+- 轨迹拼接图用缩小图像缓存生成，不保存原图
+- 可通过配置开关启用/禁用，禁用时完全静默（不分析、不打印日志）
+
+#### 3. 轨迹按小时分目录保存
+- 轨迹文件按 `YYYY-MM-DD/tracks/HH/` 分 24 个子目录保存
+- 减少单目录文件数量，提升文件系统性能
+
+#### 4. 双卡自动分配
+- 自动检测 MLU 设备数量
+- 多摄像头时轮询分配到不同设备，均衡负载
+
+#### 5. 日志时间戳可读化
+- 新增 `include/log_macros.h`：统一日志宏
+- `LOG_INFO` / `LOG_WARN` / `LOG_ERROR` / `LOG_COUT` 宏
+- 输出格式：`[YYYY-MM-DD HH:MM:SS] [LEVEL] message`
+- `LOG_INFO` / `LOG_COUT` → stdout（infer.log）
+- `LOG_WARN` / `LOG_ERROR` → stderr（infer.err）
+- 替换原有 `ROS_INFO` / `ROS_WARN` / `ROS_ERROR` / `std::cout` / `std::cerr`
+
+#### 6. 摄像头离线时长监控
+- 摄像头无数据时记录离线起始时间
+- 每 ~40s（600帧）打印一次累计离线时长
+- 日志格式：`[WARN] No Camera Data front_main, offline for 42s`
+- 数据恢复后自动重置计时
+
+### 配置说明 (config/infer.yaml)
+
+#### 全局参数
+
+```yaml
+det_engine_name: /path/to/model.cambricon     # 检测模型
+abandon_engine_name: /path/to/abandon.cambricon  # 抛洒物检测模型
+vechile_color_rate: 12   # 车型检测频率（每 N 帧检测一次）
+abandon_rate: 8           # 抛洒物检测频率（每 N 帧检测一次）
+min_points_len: 30        # 轨迹保存的最小长度
+write_flag: true          # 是否保存轨迹结果到文件
+write_path: /data/...     # 轨迹结果保存路径
+byte_track_config_file: /path/to/bytetrack.yaml  # ByteTrack 配置文件
+```
+
+#### 交通事件分析
+
+```yaml
+traffic_analyzer:
+  enabled: false                    # true 启用事件分析，false 完全禁用（默认）
+  templates_path: /data/.../templates  # 模板文件保存路径
+  events_path: /data/.../events        # 事件文件保存路径
+  stationary_frames: 30                # 静止判定帧数
+  stationary_threshold: 0.005          # 静止判定位移阈值（归一化坐标）
+```
+
+#### 多路摄像头可视化控制 (camera_visual)
+
+非 test 模式下，通过 camera_visual 列表控制哪些 camera 发布图像和绘制结果。
+每路 camera 由 direction（upstream/downstream）和 focal_type（long/short）唯一标识。
+
+空列表：所有路都不发布图像、不绘制，性能最大化
+```yaml
+camera_visual: []
+```
+
+只开启 upstream/short 这一路的可视化：
+```yaml
+camera_visual:
+  - {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}
+```
+
+同时开启多路：
+```yaml
+camera_visual:
+  - {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}
+  - {direction: upstream, focal_type: long, publish_img: true, draw_tracker: true}
+```
+
+每个条目字段说明：
+- direction: camera 方向，upstream 或 downstream
+- focal_type: 焦距类型，long 或 short
+- publish_img: true 发布检测结果图像 topic，false 跳过
+- draw_tracker: true 在图像上绘制检测框和轨迹，false 跳过
+
+未在 camera_visual 中匹配到的 camera，publish_img 和 draw_tracker 均为 false。
+
+#### Test 模式配置
+
+```yaml
+test:
+  test_flag: false                    # true 启用测试模式
+  camera_type: "short"
+  camera_direction: "upstream"
+  publish_img_topic: "/test_img"      # 图像发布 topic
+  publish_img_result: "/test_ret"     # 检测结果发布 topic
+  publish_fps: "/test_fps"            # FPS 发布 topic
+  publish_img: true                   # 是否发布图像（false 可提升帧率）
+  draw_tracker: true                  # 是否绘制检测框和轨迹（false 可提升帧率）
+  receive_radar_topic: "/test_radar"  # 雷达数据 topic
+  # 输入源（二选一）:
+  #   1) video_path: mp4 文件路径
+  #   2) receive_img_topic: ROS topic 名称（rosbag 回放用）
+  video_path: ""
+  receive_img_topic: "/test_img_raw"
+```
+
+### 编译 & 打包
+
+```bash
+source /opt/ros/noetic/setup.bash
+cd /home/files/catkin_ws
+catkin_make --only-pkg-with-deps infer_nodelet
+catkin_make install   # 生成 deb 包
+```
+
+### 依赖
+- ROS Noetic
+- 寒武纪 MLU (CNRT 4.7.12)
+- FFmpeg (libavformat, libavcodec, libavutil, libswscale)
+- OpenCV 3.4 (捆绑, 仅 core/imgproc/highgui/imgcodecs)
+- ByteTrack (内置)
+
+### 项目结构
+```
+include/
+├── bytetrack.h           # ByteTrack 跟踪器
+├── i_detector.h          # 推理后端纯虚接口
+├── cambricon_detector.h  # 寒武纪 MLU 推理实现
+├── infer.h               # 主 nodelet 头文件
+├── log_macros.h          # 日志宏定义
+├── strack.h              # 跟踪轨迹结构
+├── traffic_template.h    # 交通事件数据结构
+└── utils.h               # 工具函数
+
+src/
+├── infer.cpp             # 主处理逻辑
+├── bytetrack.cpp         # ByteTrack 实现
+├── cambricon_detector.cpp # 寒武纪 MLU 推理
+├── traffic_analyzer.cpp  # 交通事件分析引擎
+├── traffic_analyzer.h    # 交通事件分析头文件
+├── ffmpeg_video_reader.h # FFmpeg 视频读取
+├── ffmpeg_video_reader.cpp
+└── strack.h              # (已删除，避免 ODR 冲突)
+```
