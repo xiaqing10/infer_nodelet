@@ -12,6 +12,8 @@
 #include "sophon/detector_sophon.hpp"
 #elif USE_ASCEND
 #include "ascend/detector_ascend.hpp"
+#elif USE_NVIDIA
+#include "nvidia/detector_nvidia.hpp"
 #endif
 
 typedef struct DetectorRetData{
@@ -48,6 +50,8 @@ private:
 #elif USE_SOPHON
     YoloV8_det yolo_det;
 #elif USE_ASCEND
+    YoloV8_det yolo_det;
+#elif USE_NVIDIA
     YoloV8_det yolo_det;
 #endif
 };

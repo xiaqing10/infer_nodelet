@@ -25,6 +25,10 @@
 #include "sophon/resnet_sophon.hpp"
 #include "sophon/ff_decode_sophon.hpp"
 #endif
+#if USE_NVIDIA
+#include "nvidia/vehicle_color.hpp"
+#include <cuda_runtime.h>
+#endif
 #include "traffic_analyzer.h"
 #include <sys/stat.h>
 #include <ctime>
@@ -51,6 +55,9 @@ public:
     //void loadModel(const std::vector<std::string>& model_paths);
     void  load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride);
     void  load_abandon_model(std::string model_path, int mlu_infer_device, int num_class, int stride);
+#if USE_NVIDIA
+    void  load_color_model(std::string model_path);
+#endif
     void setWriteParam(std::string byte_track_config_file, 
                        bool write_flag,
                        std::string write_path,
@@ -59,7 +66,7 @@ public:
     // === Processing Threads ===
     int processRadarCamera(int index);
     void processHz();
-#if USE_SOPHON
+#if USE_SOPHON || USE_NVIDIA
     void vehicleColor();
 #endif
     void abandonDetect();
@@ -76,13 +83,15 @@ private:
     Detector abandon_detector;
 #if USE_SOPHON
     RESNET vehicle_color_detector;
+#elif USE_NVIDIA
+    VehicleColorDetector vehicle_color_detector;
 #endif
 
-#if USE_SOPHON
+#if USE_SOPHON || USE_NVIDIA
     SafeQueue<ModelInputData> vehicleColorQueue;
 #endif
     SafeQueue<AbandonInputData> abandonRecQueue;
-#if USE_SOPHON
+#if USE_SOPHON || USE_NVIDIA
     SafeQueue<VehicleColorResult> vehicleColorResultQueue;
 #endif
     SafeQueue<DetectorRetDatas> abandonResultQueue;
@@ -195,6 +204,13 @@ void  InferDet::load_abandon_model(std::string model_path, int mlu_infer_device,
     LOG_INFO("Load model success!!!");
 }
 
+#if USE_NVIDIA
+void  InferDet::load_color_model(std::string model_path){
+    LOG_INFO("Loding... COLOR Model %s", model_path.c_str());
+    vehicle_color_detector.init(model_path);
+}
+#endif
+
 
 
 void InferDet::setWriteParam(std::string byte_track_config_file_, bool write_flag_, std::string write_path_, int min_points_len_){
@@ -254,6 +270,23 @@ void InferDet::processHz() {
     }
 }
 
+#if USE_SOPHON || USE_NVIDIA
+void InferDet::vehicleColor(){
+    ModelInputData input_data;
+    while (ros::ok()) {
+        if (!vehicleColorQueue.Consume(input_data)) {
+            ros::Rate(2).sleep();
+            continue;
+        }
+        const auto cls_ret = vehicle_color_detector.inference(input_data.im);
+        vehicleColorResultQueue.Produce({
+            .tracker_id = input_data.tracker_id,
+            .vehicle_color = cls_ret.label,
+            .confidence = cls_ret.confidence
+        });
+    }
+}
+#endif
 
 void InferDet::abandonDetect() {
     LOG_INFO("Abandoned object detection thread started");
@@ -263,7 +296,6 @@ void InferDet::abandonDetect() {
         abandonRecQueue.ConsumeSync(input_data);
 
 
-        auto start = std::chrono::steady_clock::now();
         cv::Mat img = input_data.im;
         auto results = abandon_detector.inference(img);
 
@@ -351,14 +383,11 @@ void InferDet::processVideoFile(std::string video_path, int index) {
         });
 
     int rec_index = 1;
-    const int DETECT_QUALITY_RATE = 14 * 60;
     auto log_time = std::chrono::system_clock::now();
     std::vector<DetectorRetData> abandon_results;
-    bool print_diff_time = true;
 
     cv::Mat frame;
     int frame_count = 0;
-    auto last_time = std::chrono::steady_clock::now();
     ros::Rate video_loop_rate(15);
 
     while (ros::ok()) {
@@ -723,10 +752,6 @@ int  InferDet::processRadarCamera(int index){
     auto log_time = std::chrono::system_clock::now();  //    记录一次推理的开始时间
     std::vector<DetectorRetData> abandon_results;   // 主线程发的是这一段时间内检测的重复数据.
     bool print_diff_time = true;  // 是否打印时间差
-    int track_point_count_log = 0;
-
-    LOG_INFO("processRadarCamera enter loop...");
-
     int lost_camera_count = 0;
     int lost_radar_count = 0;
     std::chrono::steady_clock::time_point camera_offline_start;
@@ -893,6 +918,15 @@ int  InferDet::processRadarCamera(int index){
 
             std::vector<STrack> output_stracks = bytetrack.update(res); // 跟踪 目前不支持传输类被，类别默认使用第一帧.
 
+#if USE_SOPHON || USE_NVIDIA
+            while(true){
+                VehicleColorResult vehicle_color_result;
+                auto _c = vehicleColorResultQueue.Consume(vehicle_color_result);
+                if(!_c) break;
+                bytetrack.updateVehicleColor(vehicle_color_result.tracker_id, vehicle_color_result.vehicle_color, vehicle_color_result.confidence);
+            }
+#endif
+
             infer_nodelet::ImageDetectObject  tracker_msg;
             infer_nodelet::ImageDetectObjectSingle  single_msg;
             int objects_number = output_stracks.size();
@@ -925,13 +959,15 @@ int  InferDet::processRadarCamera(int index){
                     }
                 }
                 //if(bbox.class_id > 2 &&  r.area() > 2000 && rec_index  && !bbox.color_lock ) {
+#if USE_SOPHON || USE_NVIDIA
                 if(bbox.class_id > 2 && r.area() > 2000 && !bbox.color_lock ) {
                     cv::Mat crop_vehicle_img = mat_receive(cv::Rect(r.x, r.y, r.width, r.height));
                     ModelInputData input_vehicle_data;
                     input_vehicle_data.im = crop_vehicle_img.clone();
                     input_vehicle_data.tracker_id = _id;
-                    //vehicleColorQueue.Produce(std::move(input_vehicle_data));
+                    vehicleColorQueue.Produce(std::move(input_vehicle_data));
                 }
+#endif
 
                 // 单轨迹数据处理完毕封装发送数据
                 cv::Scalar color = colors[bbox.class_id];
@@ -1223,6 +1259,9 @@ namespace infer_ns {
             //infer_node->loadModel(model_paths);
             infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
             infer_node->load_abandon_model(model_paths[3],dev_id,abandon_class,abandon_stride);
+#if USE_NVIDIA
+            infer_node->load_color_model(model_paths[1]);
+#endif
 
 
             // Start processing threads
@@ -1239,7 +1278,9 @@ namespace infer_ns {
                 spawn(&InferDet::processRadarCamera, infer_node, thread_idx);
             }
             std::thread(&InferDet::processHz, infer_node).detach();
-            // std::thread(&InferDet::vehicleColor, infer_node).detach();
+#if USE_SOPHON || USE_NVIDIA
+            std::thread(&InferDet::vehicleColor, infer_node).detach();
+#endif
             std::thread(&InferDet::abandonDetect, infer_node).detach();
 
             // Create subscribers (only for non-video mode)
@@ -1398,12 +1439,19 @@ namespace infer_ns {
                 }
             }
             if (num_devices == 0) num_devices = 1;
+#elif USE_NVIDIA
+            int num_devices = 0;
+            cudaError_t cuda_ret = cudaGetDeviceCount(&num_devices);
+            if (cuda_ret != cudaSuccess) {
+                num_devices = 1;
+            }
+            if (num_devices == 0) num_devices = 1;
 #endif
             LOG_INFO("Detected %d MLU device(s), distributing %zu cameras round-robin",
                      num_devices, infer_params.size());
 
             // Start inference threads -------------------------------------------
-            for (int infer_index =0; infer_index < infer_params.size(); infer_index ++) {
+            for (size_t infer_index = 0; infer_index < infer_params.size(); infer_index++) {
 		int dev_id = infer_index % num_devices;
 		int det_class = 10;
 		int det_stride = 3;
@@ -1411,7 +1459,7 @@ namespace infer_ns {
 		int abandon_stride = 3;
 
                 // 如果YAML中model列表有对应的配置项，读取非默认参数
-                if (infer_index < params.size()) {
+                if (infer_index < static_cast<size_t>(params.size())) {
                     if (params[infer_index].hasMember("det_class"))
                         det_class = params[infer_index]["det_class"];
                     if (params[infer_index].hasMember("det_stride"))
@@ -1422,7 +1470,7 @@ namespace infer_ns {
                         abandon_stride = params[infer_index]["abandon_stride"];
                 }
 
-                LOG_INFO("Camera[%d] -> MLU device %d (det_class=%d det_stride=%d abandon_class=%d abandon_stride=%d)",
+                LOG_INFO("Camera[%zu] -> MLU device %d (det_class=%d det_stride=%d abandon_class=%d abandon_stride=%d)",
                          infer_index, dev_id, det_class, det_stride, abandon_class, abandon_stride);
 
                 startInferenceThread(infer_params[infer_index], model_paths,dev_id, det_class,det_stride,abandon_class,abandon_stride ,abandon_rate,

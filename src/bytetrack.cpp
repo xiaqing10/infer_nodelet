@@ -38,6 +38,29 @@ BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, std::
   cout << "Init tracker!" << endl;
 }
 
+int BYTETracker::updateVehicleColor(int xxTracker_id, int vehicle_color, float score) {
+    for (size_t i = 0; i < this->tracked_stracks.size(); i++) {
+        if (this->tracked_stracks[i].track_id == xxTracker_id) {
+            if (score > 0.95)
+                this->tracked_stracks[i].color_hits[vehicle_color] += 3;
+            else
+                this->tracked_stracks[i].color_hits[vehicle_color] += 1;
+
+            auto _i = max_element(this->tracked_stracks[i].color_hits.begin(),
+                                  this->tracked_stracks[i].color_hits.end(),
+                                  [](std::pair<char, int> left, std::pair<char, int> right) {
+                                      return left.second < right.second;
+                                  });
+            this->tracked_stracks[i].vehicle_color = _i->first;
+            if (this->tracked_stracks[i].color_hits[_i->first] > 4) {
+                this->tracked_stracks[i].color_lock = true;
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
 void BYTETracker::enableProfile(TimeStamp* ts) { m_ts = ts; }
 
 

@@ -12,6 +12,7 @@ set(ROS_PACKGE_SOURCE_DIR       "${CMAKE_SOURCE_DIR}")
 option(USE_CAMBRICON "Build with Cambricon MLU backend" OFF)
 option(USE_SOPHON "Build with Sophon TPU backend" ON)
 option(USE_ASCEND "Build with Ascend NPU backend" OFF)
+option(USE_NVIDIA "Build with NVIDIA TensorRT backend" OFF)
 
 set(backend_count 0)
 if(USE_CAMBRICON)
@@ -23,8 +24,11 @@ endif()
 if(USE_ASCEND)
     math(EXPR backend_count "${backend_count}+1")
 endif()
+if(USE_NVIDIA)
+    math(EXPR backend_count "${backend_count}+1")
+endif()
 if(backend_count EQUAL 0)
-    message(FATAL_ERROR "One of USE_CAMBRICON, USE_SOPHON, USE_ASCEND must be ON")
+    message(FATAL_ERROR "One of USE_CAMBRICON, USE_SOPHON, USE_ASCEND, USE_NVIDIA must be ON")
 endif()
 if(backend_count GREATER 1)
     message(FATAL_ERROR "Only one backend can be selected")
@@ -40,6 +44,9 @@ elseif(USE_ASCEND)
     add_definitions(-DUSE_ASCEND=1)
     add_definitions(-DENABLE_DVPP_INTERFACE)
     message(STATUS "Building for Ascend NPU platform")
+elseif(USE_NVIDIA)
+    add_definitions(-DUSE_NVIDIA=1)
+    message(STATUS "Building for NVIDIA TensorRT platform")
 endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
@@ -91,6 +98,16 @@ if(USE_ASCEND)
     set(ASCEND_LIBS ascendcl acl_dvpp acllite)
 endif()
 
+if(USE_NVIDIA)
+    include_directories(${PROJECT_SOURCE_DIR}/include/nvidia)
+    include_directories(/usr/local/cuda/include)
+    include_directories(/usr/include/opencv4/)
+    include_directories(/usr/include/eigen3)
+    link_directories(/usr/local/cuda/targets/aarch64-linux/lib/)
+    set(OPENCV_LIBS opencv_imgproc opencv_core opencv_highgui opencv_imgcodecs opencv_dnn)
+    set(NVIDIA_LIBS nvinfer cudart nvinfer_plugin)
+endif()
+
 #cv_brige
 include_directories(/opt/ros/noetic/include)
 link_directories(/opt/ros/noetic/lib)
@@ -128,6 +145,7 @@ file(GLOB native_srcs src/*.cpp)
 file(GLOB cambricon_srcs src/cambricon/*.cpp)
 file(GLOB sophon_srcs src/sophon/*.cpp)
 file(GLOB ascend_srcs src/ascend/*.cpp)
+file(GLOB nvidia_srcs src/nvidia/*.cpp)
 
 if(USE_CAMBRICON)
     add_library(infer_nodelet src/infer.cpp ${CN_TOOLS_DIR}/check.cpp ${CN_TOOLS_DIR}/Timer.cpp ${CN_INFERENCE_DIR}/Net.cc ${native_srcs} ${cambricon_srcs})
@@ -152,6 +170,14 @@ if(USE_ASCEND)
     target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${ASCEND_LIBS} -lpthread -lavcodec -lavformat -lavutil)
 endif()
 
+if(USE_NVIDIA)
+    add_library(infer_nodelet ${native_srcs} ${nvidia_srcs})
+    add_dependencies(infer_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
+    target_link_libraries(infer_nodelet cv_bridge)
+    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${NVIDIA_LIBS} -lpthread -lavcodec -lavformat -lavutil)
+endif()
+
 
 install(DIRECTORY launch model
 DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
@@ -167,6 +193,10 @@ install(FILES config/infer_sophon.yaml config/bytetrack.yaml
 )
 elseif(USE_ASCEND)
 install(FILES config/infer_ascend.yaml config/bytetrack.yaml
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+)
+elseif(USE_NVIDIA)
+install(FILES config/infer_nvidia.yaml config/bytetrack.yaml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
 )
 endif()
@@ -208,6 +238,11 @@ endif()
         set(USE_ASCEND_CMAKE TRUE)
     else()
         set(USE_ASCEND_CMAKE FALSE)
+    endif()
+    if(USE_NVIDIA)
+        set(USE_NVIDIA_CMAKE TRUE)
+    else()
+        set(USE_NVIDIA_CMAKE FALSE)
     endif()
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/install_hook.cmake.in

@@ -252,4 +252,31 @@ std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
     return infer_result;
 }
 
+#elif USE_NVIDIA
+
+void Detector::init(std::string model, int device_id, int num_class, int stride) {
+    (void)device_id;
+    (void)stride;
+    yolo_det.Init(model, num_class);
+}
+
+std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
+    std::vector<DetectorRetData> infer_result;
+    YoloV8BoxVec boxes;
+    yolo_det.Detect(img, boxes, 0);
+    for (size_t j = 0; j < boxes.size(); j++) {
+        YoloV8Box box = boxes[j];
+        DetectorRetData d;
+        d.label = box.class_id + 1;
+        d.confidence = box.score;
+        d.xmin = (int)box.x1;
+        d.ymin = (int)box.y1;
+        d.xmax = (int)box.x2;
+        d.ymax = (int)box.y2;
+        if (d.xmin < 0 || d.ymin < 0 || d.xmax > img.cols || d.ymax > img.rows) continue;
+        infer_result.push_back(d);
+    }
+    return infer_result;
+}
+
 #endif

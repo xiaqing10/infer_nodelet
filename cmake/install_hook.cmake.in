@@ -68,6 +68,13 @@ execute_process(
 )
 endif()
 
+if(@USE_NVIDIA_CMAKE@)
+execute_process(
+    COMMAND  cp    -ar ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer_nvidia.yaml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer.yaml
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/model/nvidia     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/model
+)
+endif()
+
 
 message("@ 4 CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
 
