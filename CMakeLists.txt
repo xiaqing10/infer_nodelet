@@ -122,7 +122,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
 )
 add_message_files(
-  DIRECTORY /home/files/common_msgs/rvf_commons
+  DIRECTORY common_msgs/rvf_commons
   FILES
   RadarTrackObjectProject.msg
   RadarTrackObjectProjectSingle.msg

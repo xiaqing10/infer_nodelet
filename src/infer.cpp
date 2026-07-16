@@ -22,14 +22,11 @@
 //#include "//diagnostic.hpp"
 #include "img_score.hpp"  // 图像质量检测
 #if USE_SOPHON
-#include "sophon/resnet_sophon.hpp"
 #include "sophon/ff_decode_sophon.hpp"
 #endif
 #if USE_NVIDIA
-#include "nvidia/vehicle_color.hpp"
 #include <cuda_runtime.h>
 #endif
-#include "traffic_analyzer.h"
 #include <sys/stat.h>
 #include <ctime>
 #include "ffmpeg_video_reader.h"
@@ -37,104 +34,6 @@
 #include <pluginlib/class_list_macros.h>
 //#include <cnrt.h>
 using namespace std;
-
-
-class InferDet {
-public:
-    // === Configuration Interface ===
-    void loadParam(image_transport::Publisher pub_img,
-                   ros::Publisher pub_tracker,
-                   ros::Publisher pub_fps,
-                   const std::string camera_type,
-                   const std::string camera_direction,
-                   int vehicle_color_rate,
-                   int abandon_rate,
-                   bool publish_img = true,
-                   bool draw_tracker = true);
-    
-    //void loadModel(const std::vector<std::string>& model_paths);
-    void  load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride);
-    void  load_abandon_model(std::string model_path, int mlu_infer_device, int num_class, int stride);
-#if USE_NVIDIA
-    void  load_color_model(std::string model_path);
-#endif
-    void setWriteParam(std::string byte_track_config_file, 
-                       bool write_flag,
-                       std::string write_path,
-                       int min_points_len);
-
-    // === Processing Threads ===
-    int processRadarCamera(int index);
-    void processHz();
-#if USE_SOPHON || USE_NVIDIA
-    void vehicleColor();
-#endif
-    void abandonDetect();
-    void processVideoFile(std::string video_path, int index);
-    TrafficAnalyzer traffic_analyzer;
-
-private:
-    // === Resources & Configuration ===
-    image_transport::Publisher pub_img;
-    ros::Publisher pub_tracker;
-    ros::Publisher pub_fps;
-    
-    Detector detector;
-    Detector abandon_detector;
-#if USE_SOPHON
-    RESNET vehicle_color_detector;
-#elif USE_NVIDIA
-    VehicleColorDetector vehicle_color_detector;
-#endif
-
-#if USE_SOPHON || USE_NVIDIA
-    SafeQueue<ModelInputData> vehicleColorQueue;
-#endif
-    SafeQueue<AbandonInputData> abandonRecQueue;
-#if USE_SOPHON || USE_NVIDIA
-    SafeQueue<VehicleColorResult> vehicleColorResultQueue;
-#endif
-    SafeQueue<DetectorRetDatas> abandonResultQueue;
-
-    // === Timing & Frame Management ===
-    double img_time_sec = 0.0;
-    double img_time_nsec = 0.0;
-    double radar_time_sec = 0.0;
-    double radar_time_nsec = 0.0;
-    std::atomic<int> publish_hz{0};
-
-    // === Configuration Parameters ===
-    std::string camera_type;
-    std::string camera_direction;
-    int vehicle_color_rate = 10;
-    int abandon_rate = 5;
-    int min_points_len = 30;
-    bool write_flag = false;
-    std::string write_path = "/tmp/";
-    std::string byte_track_config_file;
-    bool publish_img = true;
-    bool draw_tracker = true;
-
-    // Thread synchronization
-    std::mutex mtx;
-
-    // === Processing State ===
-    cv::Mat img_src;
-
-    // === Frame cache for montage generation ===
-    struct CachedFrame {
-        int frame_id;
-        cv::Mat img;
-    };
-    std::deque<CachedFrame> frame_cache_;
-    static const int MAX_CACHED_FRAMES = 30;
-    int cache_interval_ = 15;
-
-    void saveTrackMontage(int track_id, int class_id,
-                          const std::vector<std::vector<float>>& track_points,
-                          const std::string& save_dir,
-                          const std::string& filename_prefix);
-};
 
 void InferDet::loadParam(image_transport::Publisher _pub_img, 
                          ros::Publisher _pub_tracker,
@@ -204,10 +103,14 @@ void  InferDet::load_abandon_model(std::string model_path, int mlu_infer_device,
     LOG_INFO("Load model success!!!");
 }
 
-#if USE_NVIDIA
+#if USE_SOPHON || USE_NVIDIA
 void  InferDet::load_color_model(std::string model_path){
     LOG_INFO("Loding... COLOR Model %s", model_path.c_str());
+#if USE_SOPHON
+    vehicle_color_detector.Init(model_path);
+#elif USE_NVIDIA
     vehicle_color_detector.init(model_path);
+#endif
 }
 #endif
 
@@ -1259,7 +1162,7 @@ namespace infer_ns {
             //infer_node->loadModel(model_paths);
             infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
             infer_node->load_abandon_model(model_paths[3],dev_id,abandon_class,abandon_stride);
-#if USE_NVIDIA
+#if USE_SOPHON || USE_NVIDIA
             infer_node->load_color_model(model_paths[1]);
 #endif
 

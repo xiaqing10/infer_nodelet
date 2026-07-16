@@ -1,6 +1,8 @@
 # infer_nodelet
 
 
+## v2.2.1 - 平台解绑，适用多个平台。目前是有cambricon & sophon, nvidia , ascend
+
 ## v2.0.0 - 平台解绑，适用多个平台。目前是有cambricon & sophon。
 ### 编译改两个文件，一个是cmakelist 一个是deb版本号
 

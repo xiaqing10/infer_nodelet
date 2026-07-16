@@ -26,7 +26,7 @@ test:
   publish_img: true
   draw_tracker: true
   receive_radar_topic: /test_radar_data_tracker_Project
-  video_path: ""
+  video_path: "data/test.mp4"
   receive_img_topic: /test
 camera_visual:
   - {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}

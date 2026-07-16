@@ -31,6 +31,13 @@
 // 跟踪相关+
 #include "bytetrack.h"
 #include "safeq.hpp"
+#include "traffic_analyzer.h"
+#if USE_SOPHON
+#include "sophon/resnet_sophon.hpp"
+#endif
+#if USE_NVIDIA
+#include "nvidia/vehicle_color.hpp"
+#endif
 using namespace cv;
 
 
@@ -75,17 +82,105 @@ struct AbandonInputData{
     std::vector<DetectorRetData>  data ;
 };
 
-SafeQueue<sensor_msgs::ImageConstPtr, 3> imgQueue[6]; // 图像队列
+class InferDet {
+public:
+    void loadParam(image_transport::Publisher pub_img,
+                   ros::Publisher pub_tracker,
+                   ros::Publisher pub_fps,
+                   const std::string camera_type,
+                   const std::string camera_direction,
+                   int vehicle_color_rate,
+                   int abandon_rate,
+                   bool publish_img = true,
+                   bool draw_tracker = true);
+
+    void load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride);
+    void load_abandon_model(std::string model_path, int mlu_infer_device, int num_class, int stride);
+#if USE_SOPHON || USE_NVIDIA
+    void load_color_model(std::string model_path);
+#endif
+    void setWriteParam(std::string byte_track_config_file,
+                       bool write_flag,
+                       std::string write_path,
+                       int min_points_len);
+
+    int processRadarCamera(int index);
+    void processHz();
+#if USE_SOPHON || USE_NVIDIA
+    void vehicleColor();
+#endif
+    void abandonDetect();
+    void processVideoFile(std::string video_path, int index);
+    TrafficAnalyzer traffic_analyzer;
+
+private:
+    image_transport::Publisher pub_img;
+    ros::Publisher pub_tracker;
+    ros::Publisher pub_fps;
+
+    Detector detector;
+    Detector abandon_detector;
+#if USE_SOPHON
+    RESNET vehicle_color_detector;
+#elif USE_NVIDIA
+    VehicleColorDetector vehicle_color_detector;
+#endif
+
+#if USE_SOPHON || USE_NVIDIA
+    SafeQueue<ModelInputData> vehicleColorQueue;
+#endif
+    SafeQueue<AbandonInputData> abandonRecQueue;
+#if USE_SOPHON || USE_NVIDIA
+    SafeQueue<VehicleColorResult> vehicleColorResultQueue;
+#endif
+    SafeQueue<DetectorRetDatas> abandonResultQueue;
+
+    double img_time_sec = 0.0;
+    double img_time_nsec = 0.0;
+    double radar_time_sec = 0.0;
+    double radar_time_nsec = 0.0;
+    std::atomic<int> publish_hz{0};
+
+    std::string camera_type;
+    std::string camera_direction;
+    int vehicle_color_rate = 10;
+    int abandon_rate = 5;
+    int min_points_len = 30;
+    bool write_flag = false;
+    std::string write_path = "/tmp/";
+    std::string byte_track_config_file;
+    bool publish_img = true;
+    bool draw_tracker = true;
+
+    std::mutex mtx;
+
+    cv::Mat img_src;
+
+    struct CachedFrame {
+        int frame_id;
+        cv::Mat img;
+    };
+    std::deque<CachedFrame> frame_cache_;
+    static const int MAX_CACHED_FRAMES = 30;
+    int cache_interval_ = 15;
+
+    void saveTrackMontage(int track_id, int class_id,
+                          const std::vector<std::vector<float>>& track_points,
+                          const std::string& save_dir,
+                          const std::string& filename_prefix);
+};
+
+inline SafeQueue<sensor_msgs::ImageConstPtr, 3> imgQueue[6]; // 图像队列
 // SafeQueue<infer_nodelet::RadarTrackObjectProject, 10 > trackQueue;  // 雷达跟踪队列
-SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3 > trackQueue[6];  // 雷达跟踪队列
+inline SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3 > trackQueue[6];  // 雷达跟踪队列
 
 // 可视化和车颜色一致
 // 0，默认为绿色。 1：白，2：黑，3：红，4：黄，5：灰，6：蓝，7：绿，8：棕"
-std::vector<cv::Scalar> colors = {cv::Scalar(0, 255, 0),cv::Scalar(255, 255, 255), cv::Scalar(255, 128, 0), cv::Scalar(0, 0, 255), cv::Scalar(0, 255, 255), cv::Scalar(169, 169, 169), cv::Scalar(255, 0, 0), cv::Scalar(128, 255, 0), cv::Scalar(50, 0, 200), cv::Scalar(200, 0, 200), cv::Scalar(0, 128, 255)};
+inline std::vector<cv::Scalar> colors = {cv::Scalar(0, 255, 0),cv::Scalar(255, 255, 255), cv::Scalar(255, 128, 0), cv::Scalar(0, 0, 255), cv::Scalar(0, 255, 255), cv::Scalar(169, 169, 169), cv::Scalar(255, 0, 0), cv::Scalar(128, 255, 0), cv::Scalar(50, 0, 200), cv::Scalar(200, 0, 200), cv::Scalar(0, 128, 255)};
 
 
 // 输入的是抛洒物和原图，除以的是抛洒物的面积，不是并集.
-float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float xmin1, float ymin1, float xmax1, float ymax1)
+inline float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float xmin1, float ymin1, float xmax1, float ymax1)
 {
     float w = fmax(0.f, fmin(xmax0, xmax1) - fmax(xmin0, xmin1) + 1.0);
     float h = fmax(0.f, fmin(ymax0, ymax1) - fmax(ymin0, ymin1) + 1.0);
@@ -95,7 +190,7 @@ float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float
 }
 
 
-void bytetrack_yaml_parse(const std::string& config_path,
+inline void bytetrack_yaml_parse(const std::string& config_path,
                           bytetrack_params& params) {
   std::ifstream file(config_path);
   if (!file.is_open()) {

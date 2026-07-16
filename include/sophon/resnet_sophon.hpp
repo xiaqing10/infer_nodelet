@@ -18,6 +18,11 @@
 #include "bm_wrapper_sophon.hpp"
 #include "utils_sophon.hpp"
 
+struct ClsRetData {
+    int label;
+    float confidence;
+};
+
 class RESNET {
   std::shared_ptr<BMNNContext> m_bmContext;
   std::shared_ptr<BMNNNetwork> m_bmNetwork;
@@ -60,6 +65,12 @@ class RESNET {
   void enableProfile(TimeStamp *ts);
   int batch_size();
   int Classify(std::vector<cv::Mat>& input_images, std::vector<std::pair<int, float>>& results);
+  ClsRetData inference(cv::Mat &img) {
+      std::vector<cv::Mat> images = {img};
+      std::vector<std::pair<int, float>> results;
+      Classify(images, results);
+      return {results[0].first, results[0].second};
+  }
 };
 
 #endif /* RESNET_HPP */

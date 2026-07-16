@@ -89,7 +89,7 @@ private:
     int32_t modelHeight_ = 640;
     float confThreshold_ = 0.35;
     float nmsThreshold_ = 0.45;
-    int classNum_ = 80;
+    int classNum_ = 10;
     int max_det_ = 300;
     int modelCount_ = 1;
 

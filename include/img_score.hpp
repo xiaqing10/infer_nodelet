@@ -2,7 +2,7 @@
 #include <vector>
 
 //  遮挡检测
-double blockDetect(const cv::Mat& srcImg) {
+inline double blockDetect(const cv::Mat& srcImg) {
 
     cv::Mat grayImg, edges;
     cv::cvtColor(srcImg, grayImg, cv::COLOR_BGR2GRAY);
@@ -32,7 +32,7 @@ double blockDetect(const cv::Mat& srcImg) {
 }
 
 // 黑屏检测
-double signalDetect(const cv::Mat& srcImg) {
+inline double signalDetect(const cv::Mat& srcImg) {
   int32_t width = srcImg.cols;
   int32_t height = srcImg.rows;
 
@@ -76,7 +76,7 @@ double signalDetect(const cv::Mat& srcImg) {
 }
 
 // 图像亮度检测
-double brightnessDetect(const cv::Mat& srcImg) {
+inline double brightnessDetect(const cv::Mat& srcImg) {
 
   cv::Mat labImg;
   cv::cvtColor(srcImg, labImg, cv::COLOR_BGR2Lab);
@@ -98,7 +98,7 @@ double brightnessDetect(const cv::Mat& srcImg) {
 }
 
 // 雪花噪点
-double snowNoiseDetect(const cv::Mat& srcImg) {
+inline double snowNoiseDetect(const cv::Mat& srcImg) {
 
   cv::Mat grayImg;
   if (srcImg.channels() == 1) {
@@ -138,7 +138,7 @@ double snowNoiseDetect(const cv::Mat& srcImg) {
 }
 
 // 图像模糊检测
-double sharpnessDetect(const cv::Mat& srcImg) {
+inline double sharpnessDetect(const cv::Mat& srcImg) {
   const int kGaussianSize = 3;  // 高斯模糊的核大小
 
   cv::Mat grayImg;
@@ -196,7 +196,7 @@ double sharpnessDetect(const cv::Mat& srcImg) {
 
 // 白天和晚上的判断
 
-bool DayOrNight(Mat mat)
+inline bool DayOrNight(Mat mat)
 {
     //转换颜色空间为HSV
     cv::Mat hsvImage;
