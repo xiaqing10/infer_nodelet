@@ -120,10 +120,14 @@ void InferDet::setWriteParam(std::string byte_track_config_file_, bool write_fla
 }
 
 void InferDet::setShmParam(const std::string& shm_name_) {
+#if USE_SHM
     use_shm = true;
     shm_name = shm_name_;
     shm_reader = std::make_shared<ehawkeye::modules::units::shmmem>(shm_name, 30, false);
     LOG_INFO("SHM reader created: %s", shm_name.c_str());
+#else
+    LOG_WARN("SHM not enabled (compile with -DUSE_SHM=ON)");
+#endif
 }
 
 void InferDet::processHz() {

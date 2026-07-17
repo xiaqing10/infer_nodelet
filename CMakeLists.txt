@@ -54,6 +54,19 @@ include_directories(${PROJECT_SOURCE_DIR}/include/shm)
 link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm)
 set(SHM_LIBS shm)
 
+# SHM (shared memory) support
+option(USE_SHM "Enable SHM (shared memory) support" OFF)
+if(USE_SHM)
+    add_definitions(-DUSE_SHM=1)
+    include_directories(${PROJECT_SOURCE_DIR}/include/shm)
+    link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm)
+    set(SHM_LIBS shm)
+    message(STATUS "SHM support enabled")
+else()
+    set(SHM_LIBS "")
+    message(STATUS "SHM support disabled")
+endif()
+
 if(USE_CAMBRICON)
     include_directories(${PROJECT_SOURCE_DIR}/include/cambricon)
     include_directories(${PROJECT_SOURCE_DIR}//infer_mlu_lib/3rd/neuware/include)
@@ -181,6 +194,10 @@ if(USE_NVIDIA)
     target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${NVIDIA_LIBS} ${SHM_LIBS} -lpthread -lavcodec -lavformat -lavutil)
 endif()
 
+if(USE_SHM)
+    target_link_libraries(infer_nodelet shm)
+endif()
+
 
 install(DIRECTORY launch model
 DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
@@ -219,9 +236,11 @@ install(FILES infer_mlu_lib/3rd/neuware/lib64/libcnrt.so infer_mlu_lib/3rd/neuwa
   DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
 endif()
+if(USE_SHM)
 install(FILES infer_mlu_lib/3rd/shm/libshm.so
   DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
+endif()
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_debian.cmake.in
         ${CMAKE_CURRENT_BINARY_DIR}/cmake/package_debian.cmake
