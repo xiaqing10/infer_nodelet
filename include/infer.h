@@ -35,6 +35,8 @@
 #if USE_SOPHON
 #include "sophon/resnet_sophon.hpp"
 #endif
+#include "shm/shmmem.h"
+#include "shm/packet.h"
 #if USE_NVIDIA
 #include "nvidia/vehicle_color.hpp"
 #endif
@@ -50,6 +52,7 @@ struct InferParam{
     std::string publish_fps;            //发布频率主题
     std::string receive_radar_topic;    //接收雷达主题
     std::string video_path;             //视频文件路径（test模式使用）
+    std::string shm_name;               //共享内存名字（SHM模式）
     bool publish_img = true;             // Enable/disable image topic publishing
     bool draw_tracker = true;             // Enable/disable drawing on image
 
@@ -103,6 +106,7 @@ public:
                        bool write_flag,
                        std::string write_path,
                        int min_points_len);
+void setShmParam(const std::string& shm_name);
 
     int processRadarCamera(int index);
     void processHz();
@@ -151,6 +155,9 @@ private:
     std::string byte_track_config_file;
     bool publish_img = true;
     bool draw_tracker = true;
+    bool use_shm = false;
+    std::string shm_name;
+    std::shared_ptr<ehawkeye::modules::units::shmmem> shm_reader;
 
     std::mutex mtx;
 
@@ -170,9 +177,9 @@ private:
                           const std::string& filename_prefix);
 };
 
-inline SafeQueue<sensor_msgs::ImageConstPtr, 3> imgQueue[6]; // 图像队列
+inline std::vector<SafeQueue<sensor_msgs::ImageConstPtr, 3>> imgQueue; // 图像队列
 // SafeQueue<infer_nodelet::RadarTrackObjectProject, 10 > trackQueue;  // 雷达跟踪队列
-inline SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3 > trackQueue[6];  // 雷达跟踪队列
+inline std::vector<SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3>> trackQueue;  // 雷达跟踪队列
 
 // 可视化和车颜色一致
 // 0，默认为绿色。 1：白，2：黑，3：红，4：黄，5：灰，6：蓝，7：绿，8：棕"

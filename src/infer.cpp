@@ -1,17 +1,4 @@
 #include "log_macros.h"
-/*
-    读取多路参数，多线程的进行推理。
-    加入了单类别的抛洒物检测; 
-    加入了车型颜色；
-    以上两个模型都配置成可配参数
-    v0.3.1 加入了test模式，增加了图像黑屏检测,替换模型。
-    v0.3.2 加入了错误码
-    v0.4.1 优化跟踪
-    v0.4.2 add track_log
-    v0.4.4 借助ds优化代码，轨迹长度过滤可配.
-    v0.4.5 类型bug，修复
-*/
-
 #include <infer.h>
 #include <iostream>
 #include<string.h>
@@ -130,6 +117,13 @@ void InferDet::setWriteParam(std::string byte_track_config_file_, bool write_fla
             LOG_WARN("Failed to create write_path: %s", write_path.c_str());
         }
     }
+}
+
+void InferDet::setShmParam(const std::string& shm_name_) {
+    use_shm = true;
+    shm_name = shm_name_;
+    shm_reader = std::make_shared<ehawkeye::modules::units::shmmem>(shm_name, 30, false);
+    LOG_INFO("SHM reader created: %s", shm_name.c_str());
 }
 
 void InferDet::processHz() {
@@ -613,7 +607,28 @@ int  InferDet::processRadarCamera(int index){
 
     cv::Mat mat_receive;
     sensor_msgs::ImageConstPtr msg_img;
-    infer_nodelet::RadarTrackObjectProject::ConstPtr  msg_track; 
+    infer_nodelet::RadarTrackObjectProject::ConstPtr  msg_track;
+
+    // 如果是SHM模式，启动独立读取线程
+    if (use_shm) {
+        std::thread([this, index]() {
+            while (ros::ok()) {
+                void* data = nullptr;
+                int size = 0;
+                int result = shm_reader->nocopyRead((void**)&data, size);
+                if (result >= 0 && data) {
+                    auto* pkt = static_cast<ehawkeye::modules::common::packet*>(data);
+                    cv::Mat mat = cv::Mat(pkt->height, pkt->width, CV_8UC3, pkt->data).clone();
+                    cv_bridge::CvImage cv_img;
+                    cv_img.image = mat;
+                    cv_img.encoding = "bgr8";
+                    cv_img.header.stamp = ros::Time(pkt->dts / 1000.0);
+                    imgQueue[index].Produce(cv_img.toImageMsg());
+                }
+            }
+        }).detach();
+    }
+
     // 跟踪部分
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
@@ -664,7 +679,34 @@ int  InferDet::processRadarCamera(int index){
     while(ros::ok()){
         auto once_start_time = std::chrono::system_clock::now();
 
-        if(imgQueue[index].Consume(msg_img)){
+if (use_shm)
+        {
+            if(imgQueue[index].Consume(msg_img)){
+            img_time_sec = msg_img -> header.stamp.sec;
+            img_time_nsec = msg_img -> header.stamp.nsec;
+            lost_camera_count = 0;
+            camera_offline_reported = false;
+            mat_receive = cv::Mat(msg_img->height, msg_img->width, CV_8UC3,
+                                  const_cast<uint8_t*>(msg_img->data.data()),
+                                  msg_img->step).clone();
+        }
+        else{
+            usleep(3000);
+            lost_camera_count ++;
+            if(!camera_offline_reported){
+                camera_offline_start = std::chrono::steady_clock::now();
+                camera_offline_reported = true;
+            }
+            if(lost_camera_count % 600 == 0 && camera_direction != "" && camera_type != "" ){
+                auto offline_sec = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - camera_offline_start).count();
+                LOG_WARN("No Camera Data %s %s, offline for %lds", camera_direction.c_str(), camera_type.c_str(), offline_sec);
+            }
+            continue;
+        }
+        } else
+        {
+            if(imgQueue[index].Consume(msg_img)){
             img_time_sec = msg_img -> header.stamp.sec;
             img_time_nsec = msg_img -> header.stamp.nsec;
             lost_camera_count = 0;
@@ -684,16 +726,16 @@ int  InferDet::processRadarCamera(int index){
             }
             continue;
         }
- 
+
         try {
                 mat_receive =  cv_bridge::toCvShare(msg_img, "bgr8")->image ;
             }
         catch( cv_bridge::Exception& e )
             {
-                //diagnostic.Pub//diagnosticData(ERROR_CODE_LEVEL::ERROR, rvf::system::KeyCode::kImgCodeError, "ImageDecodeError-" + camera_direction + "-" + camera_type);
                 LOG_ERROR( "Could not convert from '%s' to 'bgr8'.", msg_img->encoding.c_str() );
                 mat_receive = cv::Mat();
             }
+        }
 
         if (mat_receive.empty())
             {
@@ -1031,6 +1073,7 @@ namespace infer_ns {
     private:
         std::vector<ros::Subscriber> sub_imgs;
         std::vector<ros::Subscriber> sub_radars;
+        int next_thread_idx = 0;
         
         // Helper function to create topic names
         std::string makeTopic(const std::string& prefix, 
@@ -1049,7 +1092,8 @@ namespace infer_ns {
                 .publish_img_topic = makeTopic("_camera/image_detect", pole_name, cam.direction, cam.focal_type),
                 .publish_img_result = makeTopic("_camera/image_detect_object", pole_name, cam.direction, cam.focal_type),
                 .publish_fps = makeTopic("_camera/image_detect_object/fps_hz", pole_name, cam.direction, cam.focal_type),
-                .receive_radar_topic = makeTopic("/radar/track_object_project", pole_name, cam.direction, "")
+                .receive_radar_topic = makeTopic("/radar/track_object_project", pole_name, cam.direction, ""),
+                .shm_name = "/_" + pole_name + "_" + cam.direction + "_" + cam.focal_type + "_camera_image_raw.decoder"
             };
         }
 
@@ -1107,6 +1151,11 @@ namespace infer_ns {
                                   param.draw_tracker);
             infer_node->setWriteParam(byte_track_config_file, write_flag, 
                                      write_path, min_points_len);
+bool use_shm = false;
+            nh.param("use_shm", use_shm, false);
+            if (use_shm) {
+                infer_node->setShmParam(param.shm_name);
+            }
 
             // Initialize TrafficAnalyzer
             {
@@ -1168,7 +1217,12 @@ namespace infer_ns {
 
 
             // Start processing threads
-            int thread_idx = sub_imgs.size();  // Next available index
+            int thread_idx = next_thread_idx++;
+            // 确保全局队列足够大
+            if (thread_idx >= (int)imgQueue.size()) {
+                imgQueue.resize(thread_idx + 1);
+                trackQueue.resize(thread_idx + 1);
+            }
             auto spawn = [](auto func, auto obj, int idx) {
                 std::thread(func, obj, idx).detach();
             };
@@ -1192,6 +1246,7 @@ namespace infer_ns {
                     param.receive_radar_topic, 1, 
                     boost::bind(&trackCallback, _1, thread_idx)
                 ));
+if (!use_shm)
                 sub_imgs.emplace_back(nh.subscribe<sensor_msgs::Image>(
                     param.receive_img_topic, 1, 
                     boost::bind(&imgCallback, _1, thread_idx)
@@ -1288,6 +1343,7 @@ namespace infer_ns {
                     LOG_INFO("RUNNING IN TEST MODE (ROS topics)");
                     private_nh.getParam("test/receive_img_topic", param.receive_img_topic);
                 }
+private_nh.getParam("test/shm_name", param.shm_name);
                 infer_params.push_back(param);
             }
             LOG_INFO("Found %zu camera configurations", infer_params.size());

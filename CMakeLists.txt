@@ -50,6 +50,9 @@ elseif(USE_NVIDIA)
 endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_SOURCE_DIR}/include/shm)
+link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm)
+set(SHM_LIBS shm)
 
 if(USE_CAMBRICON)
     include_directories(${PROJECT_SOURCE_DIR}/include/cambricon)
@@ -151,7 +154,7 @@ if(USE_CAMBRICON)
     add_library(infer_nodelet src/infer.cpp ${CN_TOOLS_DIR}/check.cpp ${CN_TOOLS_DIR}/Timer.cpp ${CN_INFERENCE_DIR}/Net.cc ${native_srcs} ${cambricon_srcs})
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
-    target_link_libraries(infer_nodelet ${cambricon} ${opencv} pthread avformat avcodec avutil swscale jsoncpp)
+    target_link_libraries(infer_nodelet ${cambricon} ${opencv} ${SHM_LIBS} pthread avformat avcodec avutil swscale jsoncpp)
 endif()
 
 if(USE_SOPHON)
@@ -159,7 +162,7 @@ if(USE_SOPHON)
     add_dependencies(infer_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
-    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${BM_LIBS} ${JPU_LIBS} -lpthread -lavcodec -lavformat -lavutil)
+    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${BM_LIBS} ${JPU_LIBS} ${SHM_LIBS} -lpthread -lavcodec -lavformat -lavutil)
 endif()
 
 if(USE_ASCEND)
@@ -167,7 +170,7 @@ if(USE_ASCEND)
     add_dependencies(infer_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
-    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${ASCEND_LIBS} -lpthread -lavcodec -lavformat -lavutil)
+    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${ASCEND_LIBS} ${SHM_LIBS} -lpthread -lavcodec -lavformat -lavutil)
 endif()
 
 if(USE_NVIDIA)
@@ -175,7 +178,7 @@ if(USE_NVIDIA)
     add_dependencies(infer_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
-    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${NVIDIA_LIBS} -lpthread -lavcodec -lavformat -lavutil)
+    target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${NVIDIA_LIBS} ${SHM_LIBS} -lpthread -lavcodec -lavformat -lavutil)
 endif()
 
 
@@ -216,6 +219,9 @@ install(FILES infer_mlu_lib/3rd/neuware/lib64/libcnrt.so infer_mlu_lib/3rd/neuwa
   DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
 endif()
+install(FILES infer_mlu_lib/3rd/shm/libshm.so
+  DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+)
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_debian.cmake.in
         ${CMAKE_CURRENT_BINARY_DIR}/cmake/package_debian.cmake

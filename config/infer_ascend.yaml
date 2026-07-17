@@ -1,4 +1,5 @@
 # Set up your params
+use_shm: false
 det_engine_name: /home/files/rvf/share/infer_nodelet/model/yolov8n.om
 abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/abandon.om
 vechile_color_rate: 15

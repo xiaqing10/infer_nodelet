@@ -98,6 +98,15 @@ if(EXISTS "${CMAKE_INSTALL_PREFIX}/lib/libinfer_nodelet.so")
     )
 endif()
 
+if(EXISTS "${CMAKE_INSTALL_PREFIX}/lib/libshm.so")
+    execute_process(
+       COMMAND cp "${CMAKE_INSTALL_PREFIX}/lib/libshm.so" "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/libshm.so"
+    )
+    execute_process(
+        COMMAND chmod 644 "${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/lib/libshm.so"
+    )
+endif()
+
 execute_process(
     COMMAND  dpkg  -b  ${CPACK_OUTOUT_DIRECTORY} "${CPACK_PACKAGE_FILE_NAME}.deb"
     RESULT_VARIABLE msg
