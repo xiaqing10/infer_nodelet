@@ -27,6 +27,7 @@ void InferDet::loadParam(image_transport::Publisher _pub_img,
                          ros::Publisher _pub_fps,
                          string _camera_type,
                          string _camera_direction,
+                         string _pole_name,
                          int _vehicle_color_rate,
                          int _abandon_rate, 
                          bool _publish_img,
@@ -39,6 +40,7 @@ void InferDet::loadParam(image_transport::Publisher _pub_img,
         pub_fps = std::move(_pub_fps);
         camera_type = std::move(_camera_type);
         camera_direction = std::move(_camera_direction);
+        pole_name = std::move(_pole_name);
         vehicle_color_rate = _vehicle_color_rate;
         abandon_rate = _abandon_rate;
         publish_img = _publish_img;
@@ -152,7 +154,8 @@ void InferDet::processHz() {
             {
                 hz_data.data = current_fps;
                 pub_fps.publish(hz_data);
-                LOG_INFO("%s %s publish_hz: %.2f", 
+                LOG_INFO("%s %s %s publish_hz: %.2f", 
+                         pole_name.c_str(),
                          camera_direction.c_str(), 
                          camera_type.c_str(), 
                          current_fps);
@@ -1089,16 +1092,17 @@ namespace infer_ns {
 
         // Unified topic generation
         InferParam createTopicParams(const CameraInfo& cam, const std::string& pole_name) {
-            return {
-                .camera_type = cam.focal_type,
-                .camera_direction = cam.direction,
-                .receive_img_topic = makeTopic("_camera/image_raw", pole_name, cam.direction, cam.focal_type),
-                .publish_img_topic = makeTopic("_camera/image_detect", pole_name, cam.direction, cam.focal_type),
-                .publish_img_result = makeTopic("_camera/image_detect_object", pole_name, cam.direction, cam.focal_type),
-                .publish_fps = makeTopic("_camera/image_detect_object/fps_hz", pole_name, cam.direction, cam.focal_type),
-                .receive_radar_topic = makeTopic("/radar/track_object_project", pole_name, cam.direction, ""),
-                .shm_name = "/_" + pole_name + "_" + cam.direction + "_" + cam.focal_type + "_camera_image_raw.decoder"
-            };
+            InferParam p;
+            p.camera_type = cam.focal_type;
+            p.camera_direction = cam.direction;
+            p.pole_name = pole_name;
+            p.receive_img_topic = makeTopic("_camera/image_raw", pole_name, cam.direction, cam.focal_type);
+            p.publish_img_topic = makeTopic("_camera/image_detect", pole_name, cam.direction, cam.focal_type);
+            p.publish_img_result = makeTopic("_camera/image_detect_object", pole_name, cam.direction, cam.focal_type);
+            p.publish_fps = makeTopic("_camera/image_detect_object/fps_hz", pole_name, cam.direction, cam.focal_type);
+            p.receive_radar_topic = makeTopic("/radar/track_object_project", pole_name, cam.direction, "");
+            p.shm_name = "/_" + pole_name + "_" + cam.direction + "_" + cam.focal_type + "_camera_image_raw.decoder";
+            return p;
         }
 
         // Load model paths with error handling
@@ -1149,7 +1153,8 @@ namespace infer_ns {
 
             // Configure inference node
             infer_node->loadParam(pub_img, pub_tracker, pub_fps, 
-                                  param.camera_type, param.camera_direction, 
+                                  param.camera_type, param.camera_direction,
+                                  param.pole_name,
                                   vechile_color_rate, abandon_rate,
                                   param.publish_img,
                                   param.draw_tracker);

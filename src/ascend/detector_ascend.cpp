@@ -376,13 +376,26 @@ int YoloV8_det::pre_process(const cv::Mat& srcImage) {
     cv::Mat rgbImage;
     cv::cvtColor(srcImage, rgbImage, cv::COLOR_BGR2RGB);
 
+    int resized_w, resized_h;
+    if (isAlignWidth) {
+        resized_w = modelWidth_;
+        resized_h = (int)(srcHeight_ * ratio);
+    } else {
+        resized_w = (int)(srcWidth_ * ratio);
+        resized_h = modelHeight_;
+    }
+
     cv::Mat resizedImage;
-    cv::resize(rgbImage, resizedImage, cv::Size(modelWidth_, modelHeight_));
+    cv::resize(rgbImage, resizedImage, cv::Size(resized_w, resized_h));
+
+    cv::Mat canvas(modelHeight_, modelWidth_, CV_8UC3, cv::Scalar(114, 114, 114));
+    cv::Mat roi = canvas(cv::Rect(tx1, ty1, resized_w, resized_h));
+    resizedImage.copyTo(roi);
 
     aclrtMemcpyKind policy = (runMode_ == ACL_HOST) ?
                              ACL_MEMCPY_HOST_TO_DEVICE : ACL_MEMCPY_DEVICE_TO_DEVICE;
     aclError ret = aclrtMemcpy(g_imageDataBuf_, g_imageDataSize_,
-                               resizedImage.ptr<uint8_t>(), g_imageDataSize_, policy);
+                               canvas.ptr<uint8_t>(), g_imageDataSize_, policy);
     if (ret != ACL_SUCCESS) {
         std::cerr << "[ERROR] Copy resized image data to device failed on device " << deviceId_
                   << ", error: " << ret << std::endl;
@@ -510,7 +523,7 @@ int YoloV8_det::post_process(const std::vector<InferenceOutput>& inferOutputs,
     uint32_t outputDataBufId = 0;
     float *classBuff = static_cast<float *>(inferOutputs[outputDataBufId].data.get());
     size_t total_elements = inferOutputs[outputDataBufId].size / sizeof(float);
-    size_t num_features = 84;
+    size_t num_features = 4 + classNum_;
     size_t num_boxes = total_elements / num_features;
 
     YoloV8BoxVec raw_boxes;

@@ -47,15 +47,16 @@ namespace infer_ns {
         InferParam createTopicParams(const std::string& pole_name,
                                      const std::string& direction,
                                      const std::string& focal_type) {
-            return {
-                .camera_type = focal_type,
-                .camera_direction = direction,
-                .receive_img_topic = "",
-                .publish_img_topic = makeTopic("_camera/image_detect", pole_name, direction, focal_type),
-                .publish_img_result = makeTopic("_camera/image_detect_object", pole_name, direction, focal_type),
-                .publish_fps = makeTopic("_camera/image_detect_object/fps_hz", pole_name, direction, focal_type),
-                .receive_radar_topic = makeTopic("/radar/track_object_project", pole_name, direction, "")
-            };
+            InferParam p;
+            p.camera_type = focal_type;
+            p.camera_direction = direction;
+            p.pole_name = pole_name;
+            p.receive_img_topic = "";
+            p.publish_img_topic = makeTopic("_camera/image_detect", pole_name, direction, focal_type);
+            p.publish_img_result = makeTopic("_camera/image_detect_object", pole_name, direction, focal_type);
+            p.publish_fps = makeTopic("_camera/image_detect_object/fps_hz", pole_name, direction, focal_type);
+            p.receive_radar_topic = makeTopic("/radar/track_object_project", pole_name, direction, "");
+            return p;
         }
 
         std::vector<std::string> loadModelPaths(ros::NodeHandle& nh) {
@@ -91,6 +92,7 @@ namespace infer_ns {
                                   bool write_flag,
                                   const std::string& write_path,
                                   int min_points_len,
+                                  const std::string& pole_name,
                                   ros::NodeHandle& nh) {
             auto infer_node = std::make_shared<InferDet>();
             image_transport::ImageTransport it(nh);
@@ -103,6 +105,7 @@ namespace infer_ns {
 
             infer_node->loadParam(pub_img, pub_tracker, pub_fps,
                                   param.camera_type, param.camera_direction,
+                                  pole_name,
                                   vechile_color_rate, abandon_rate,
                                   param.publish_img,
                                   param.draw_tracker);
@@ -313,6 +316,7 @@ namespace infer_ns {
                                     abandon_rate,
                                     vechile_color_rate, byte_track_config_file,
                                     write_flag, write_path, min_points_len,
+                                    "rtsp" + std::to_string(i),
                                     private_nh);
 
                 std::thread(&DataNodeletRtsp::rtspReadThread, this,

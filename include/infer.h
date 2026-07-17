@@ -46,6 +46,7 @@ using namespace cv;
 struct InferParam{
     std::string camera_type;            // 远近枪标志
     std::string camera_direction;        // 上下行标志
+    std::string pole_name;               // 杆号
     std::string receive_img_topic;      //接收图像主题
     std::string publish_img_topic;      //发布图像主题
     std::string publish_img_result;     //发布图像检测数据主题
@@ -92,6 +93,7 @@ public:
                    ros::Publisher pub_fps,
                    const std::string camera_type,
                    const std::string camera_direction,
+                   const std::string pole_name,
                    int vehicle_color_rate,
                    int abandon_rate,
                    bool publish_img = true,
@@ -147,6 +149,7 @@ private:
 
     std::string camera_type;
     std::string camera_direction;
+    std::string pole_name;
     int vehicle_color_rate = 10;
     int abandon_rate = 5;
     int min_points_len = 30;
