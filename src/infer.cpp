@@ -22,6 +22,125 @@
 //#include <cnrt.h>
 using namespace std;
 
+#if USE_SOPHON
+static void batch_preprocess_thread(int batch_size) {
+    LOG_INFO("[batch_pre] thread started, batch_size=%d", batch_size);
+    int num_cameras = g_cam_frame_queues.size();
+    int round_start = 0;
+
+    while (ros::ok()) {
+        std::vector<BatchFrameData> batch_frames;
+        std::vector<int> batch_camera_ids;
+
+        // Round-robin: take at most one frame per camera per round
+        for (int i = 0; i < num_cameras && (int)batch_frames.size() < batch_size; i++) {
+            int c = (round_start + i) % num_cameras;
+            BatchFrameData fd;
+            if (g_cam_frame_queues[c].Consume(fd)) {
+                batch_frames.push_back(std::move(fd));
+                batch_camera_ids.push_back(fd.camera_id);
+            }
+        }
+        if (!batch_frames.empty()) {
+            round_start = (batch_camera_ids.back() + 1) % num_cameras;
+        }
+
+        if (batch_frames.empty()) {
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+            continue;
+        }
+
+        int n = batch_frames.size();
+        std::vector<bm_image> batch_imgs(n);
+        for (int i = 0; i < n; i++) {
+            cv::bmcv::toBMI(batch_frames[i].mat, &batch_imgs[i]);
+        }
+
+        bm_tensor_t input_tensor;
+        std::vector<bm_tensor_t> output_tensors;
+        output_tensors.resize(g_shared_detector->getOutputNum());
+        std::vector<std::pair<int, int>> txy_batch;
+        std::vector<std::pair<float, float>> ratios_batch;
+
+        int ret = g_shared_detector->pre_process(batch_imgs, input_tensor, txy_batch, ratios_batch);
+        if (ret != 0) {
+            LOG_ERROR("[batch_pre] pre_process failed");
+            for (auto& img : batch_imgs) bm_image_destroy(img);
+            continue;
+        }
+
+        ret = g_shared_detector->forward(input_tensor, output_tensors);
+        if (ret != 0) {
+            LOG_ERROR("[batch_pre] forward failed");
+            for (auto& img : batch_imgs) bm_image_destroy(img);
+            continue;
+        }
+
+        InferResult ir;
+        ir.input_images = std::move(batch_imgs);
+        ir.output_tensors = std::move(output_tensors);
+        ir.txy_batch = std::move(txy_batch);
+        ir.ratios_batch = std::move(ratios_batch);
+        ir.camera_ids = std::move(batch_camera_ids);
+        ir.batch_size = n;
+        ir.frames.reserve(n);
+        ir.img_time_secs.reserve(n);
+        ir.img_time_nsecs.reserve(n);
+        for (int i = 0; i < n; i++) {
+            ir.frames.push_back(std::move(batch_frames[i].mat));
+            ir.img_time_secs.push_back(batch_frames[i].img_time_sec);
+            ir.img_time_nsecs.push_back(batch_frames[i].img_time_nsec);
+        }
+
+        g_post_queue.Produce(std::move(ir));
+    }
+}
+
+static void batch_postprocess_thread() {
+    LOG_INFO("[batch_post] thread started");
+    while (ros::ok()) {
+        InferResult ir;
+        if (!g_post_queue.ConsumeSync(ir)) {
+            continue;
+        }
+
+        std::vector<YoloV8BoxVec> boxes;
+        int ret = g_shared_detector->post_process(ir.input_images, ir.output_tensors,
+                                                   ir.txy_batch, ir.ratios_batch, boxes);
+        if (ret != 0) {
+            LOG_ERROR("[batch_post] post_process failed");
+            for (auto& img : ir.input_images) bm_image_destroy(img);
+            continue;
+        }
+
+        for (int i = 0; i < ir.batch_size; i++) {
+            int cam_id = ir.camera_ids[i];
+            std::vector<DetectorRetData> det_results;
+            for (auto& box : boxes[i]) {
+                DetectorRetData d;
+                d.label = box.class_id;
+                d.confidence = box.score;
+                d.xmin = (int)box.x1;
+                d.ymin = (int)box.y1;
+                d.xmax = (int)box.x2;
+                d.ymax = (int)box.y2;
+                det_results.push_back(d);
+            }
+            CameraResult cr;
+            cr.frame = std::move(ir.frames[i]);
+            cr.detections = std::move(det_results);
+            cr.img_time_sec = ir.img_time_secs[i];
+            cr.img_time_nsec = ir.img_time_nsecs[i];
+            g_result_queues[cam_id].Produce(std::move(cr));
+        }
+
+        for (auto& img : ir.input_images) {
+            bm_image_destroy(img);
+        }
+    }
+}
+#endif
+
 void InferDet::loadParam(image_transport::Publisher _pub_img, 
                          ros::Publisher _pub_tracker,
                          ros::Publisher _pub_fps,
@@ -83,8 +202,12 @@ void InferDet::loadModel(const std::vector<std::string>& model_paths) {
 
 
 void  InferDet::load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride){
+#if !USE_SOPHON
     LOG_INFO("Loding... DETRECTOR Model %s", model_path.c_str());
     detector.init(model_path, mlu_infer_device, num_class, stride);
+#else
+    (void)model_path; (void)mlu_infer_device; (void)num_class; (void)stride;
+#endif
 }
 
 void  InferDet::load_abandon_model(std::string model_path, int mlu_infer_device, int num_class, int stride){
@@ -306,6 +429,16 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
         frame.copyTo(img_src);
 
+#if USE_SOPHON
+        {
+            BatchFrameData bfd;
+            bfd.mat = frame.clone();
+            bfd.camera_id = camera_id_;
+            bfd.frame_width = frame.cols;
+            bfd.frame_height = frame.rows;
+            g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
+        }
+#else
         std::vector<DetectorRetData> res = detector.inference(frame);
 
         for (auto& obj : res) {
@@ -355,12 +488,12 @@ void InferDet::processVideoFile(std::string video_path, int index) {
                 for (unsigned track_point_len = 1; track_point_len < bbox.track_points.size(); track_point_len++) {
                     auto _x = (int)(bbox.track_points[track_point_len][0] + bbox.track_points[track_point_len][2] / 2);
                     auto _y = (int)(bbox.track_points[track_point_len][1] + bbox.track_points[track_point_len][3]);
-                    cv::line(img_src, cv::Point(track_x, track_y), cv::Point(_x, _y), colors[bbox.class_id], 3, 8);
+                    cv::line(img_src, cv::Point(track_x, track_y), cv::Point(_x, _y), vehicle_colors[bbox.vehicle_color], 3, 8);
                     track_x = _x;
                     track_y = _y;
                 }
             }
-            cv::Scalar color = colors[bbox.class_id];
+            cv::Scalar color = vehicle_colors[bbox.vehicle_color];
             if (bbox.state == TrackState::Lost) {
                 // Lost轨迹：虚线框 + 半透明文字
                 for (int line_x = x0; line_x < x0 + w; line_x += 8) {
@@ -430,7 +563,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
                 single_msg.plate_confid = 0;
                 single_msg.plate_color = 0;
                 tracker_msg.objects.push_back(single_msg);
-                cv::Scalar color = colors[0];
+                cv::Scalar color = vehicle_colors[0];
                 cv::rectangle(img_src, r, color, 2);
                 // cv::putText(img_src, "o", cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 3);
                 objects_number += 1;
@@ -459,6 +592,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
             LOG_INFO("all infer consume: %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(once_end_time - once_start_time).count());
             log_time = once_end_time;
         }
+#endif
 
         video_loop_rate.sleep();
     }
@@ -617,6 +751,7 @@ int  InferDet::processRadarCamera(int index){
     infer_nodelet::RadarTrackObjectProject::ConstPtr  msg_track;
 
     // 如果是SHM模式，启动独立读取线程
+#if USE_SOPHON
     if (use_shm) {
         std::thread([this, index]() {
             while (ros::ok()) {
@@ -626,15 +761,19 @@ int  InferDet::processRadarCamera(int index){
                 if (result >= 0 && data) {
                     auto* pkt = static_cast<ehawkeye::modules::common::packet*>(data);
                     cv::Mat mat = cv::Mat(pkt->height, pkt->width, CV_8UC3, pkt->data).clone();
-                    cv_bridge::CvImage cv_img;
-                    cv_img.image = mat;
-                    cv_img.encoding = "bgr8";
-                    cv_img.header.stamp = ros::Time(pkt->dts / 1000.0);
-                    imgQueue[index].Produce(cv_img.toImageMsg());
+                    BatchFrameData bfd;
+                    bfd.mat = mat;
+                    bfd.camera_id = camera_id_;
+                    bfd.frame_width = mat.cols;
+                    bfd.frame_height = mat.rows;
+                    bfd.img_time_sec = (double)(pkt->dts / 1000LL);
+                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
+                    g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
                 }
             }
         }).detach();
     }
+#endif
 
     // 跟踪部分
     bytetrack_params params;
@@ -688,29 +827,12 @@ int  InferDet::processRadarCamera(int index){
 
 if (use_shm)
         {
-            if(imgQueue[index].Consume(msg_img)){
-            img_time_sec = msg_img -> header.stamp.sec;
-            img_time_nsec = msg_img -> header.stamp.nsec;
-            lost_camera_count = 0;
-            camera_offline_reported = false;
-            mat_receive = cv::Mat(msg_img->height, msg_img->width, CV_8UC3,
-                                  const_cast<uint8_t*>(msg_img->data.data()),
-                                  msg_img->step).clone();
-        }
-        else{
-            usleep(3000);
-            lost_camera_count ++;
-            if(!camera_offline_reported){
-                camera_offline_start = std::chrono::steady_clock::now();
-                camera_offline_reported = true;
-            }
-            if(lost_camera_count % 600 == 0 && camera_direction != "" && camera_type != "" ){
-                auto offline_sec = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - camera_offline_start).count();
-                LOG_WARN("No Camera Data %s %s, offline for %lds", camera_direction.c_str(), camera_type.c_str(), offline_sec);
-            }
+            // SHM 模式下帧由独立线程直接推入 g_cam_frame_queues，
+            // 经 batch pipeline 处理后由 processResult 线程异步消费。
+            // 主循环仅负责雷达数据读取和离线检测。
+            // 休眠一小段时间避免空转
+            usleep(10000);
             continue;
-        }
         } else
         {
             if(imgQueue[index].Consume(msg_img)){
@@ -750,9 +872,22 @@ if (use_shm)
                 //diagnostic.Pub//diagnosticData(ERROR_CODE_LEVEL::ERROR, rvf::system::KeyCode::kImgCodeError, "ImageDecodeError-" + camera_direction + "-" + camera_type);
                 continue;
             }
-        else{
+else{
             // LOG_INFO("START TO INFER & TRACKER");
+#if !USE_SOPHON
             mat_receive.copyTo(img_src);
+#endif
+#if USE_SOPHON
+            // Batch pipeline: push frame to per-camera queue, return immediately
+            BatchFrameData bfd;
+            bfd.mat = mat_receive.clone();
+            bfd.camera_id = camera_id_;
+            bfd.frame_width = mat_receive.cols;
+            bfd.frame_height = mat_receive.rows;
+            g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
+            // 结果由 processResult 线程异步消费
+            continue;
+#else
             std::vector<DetectorRetData>  res = detector.inference(mat_receive);
             // add seg draw 
             /*
@@ -905,7 +1040,7 @@ if (use_shm)
                     for(unsigned track_point_len = 1; track_point_len < bbox.track_points.size(); track_point_len++){
                         auto _x = (int)(bbox.track_points[track_point_len][0] + bbox.track_points[track_point_len][2] / 2);
                         auto _y = (int)(bbox.track_points[track_point_len][1] + bbox.track_points[track_point_len][3]);
-                        cv::line(img_src, cv::Point(track_x, track_y), cv::Point(_x, _y), colors[bbox.class_id],3,8);
+                        cv::line(img_src, cv::Point(track_x, track_y), cv::Point(_x, _y), vehicle_colors[bbox.vehicle_color],3,8);
                         track_x = _x;
                         track_y = _y;
                     }
@@ -922,7 +1057,7 @@ if (use_shm)
 #endif
 
                 // 单轨迹数据处理完毕封装发送数据
-                cv::Scalar color = colors[bbox.class_id];
+                cv::Scalar color = vehicle_colors[bbox.vehicle_color];
                 if (bbox.state == TrackState::Lost) {
                     for (int line_x = r.x; line_x < r.x + r.width; line_x += 8) {
                         cv::line(img_src, cv::Point(line_x, r.y), cv::Point(std::min(line_x + 4, r.x + r.width), r.y), color, 2);
@@ -990,7 +1125,7 @@ if (use_shm)
                     single_msg.plate_confid =  0;
                     single_msg.plate_color  = 0;  // 目前暂无此功能
                     tracker_msg.objects.push_back(single_msg);
-                    cv::Scalar color = colors[0];
+cv::Scalar color = vehicle_colors[0];
                     cv::rectangle(img_src, r, color, 2);
                     cv::putText(img_src, "other", cv::Point(r.x , r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 3);
                     objects_number += 1;
@@ -1021,10 +1156,316 @@ if (use_shm)
             }
 
             loop_rate.sleep();
+#endif
         }
     }
 return 0;
 }
+
+#if USE_SOPHON
+void InferDet::processResult() {
+    LOG_INFO("processResult thread running...");
+
+    bytetrack_params params;
+    bytetrack_yaml_parse(byte_track_config_file, params);
+    BYTETracker bytetrack(params, write_flag, write_path, min_points_len, camera_type, camera_direction);
+    bytetrack.setTrackRemovedCallback(
+        [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
+            std::vector<TrackPoint> pts;
+            for (auto& p : track_points) {
+                if (img_src.cols == 0 || img_src.rows == 0) continue;
+                float cx = (p[0] + p[2] / 2) / img_src.cols;
+                float cy = (p[1] + p[3] / 2) / img_src.rows;
+                if (!std::isfinite(cx) || !std::isfinite(cy)) continue;
+                TrackPoint pt;
+                pt.frame_id = static_cast<int>(p[5]);
+                pt.x = cx;
+                pt.y = cy;
+                pt.class_id = static_cast<int>(p[4]);
+                pts.push_back(pt);
+            }
+            TrafficEventType evt = traffic_analyzer.analyzeTrajectory(track_id, class_id, pts,
+                                                camera_type, camera_direction, img_src);
+            switch (evt) {
+                case TrafficEventType::WRONG_WAY: return "wrong_way";
+                case TrafficEventType::STATIONARY: return "stationary";
+                default: return "";
+            }
+        });
+
+    bytetrack.setSaveFrameCallback(
+        [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points,
+               const std::string& save_dir, const std::string& filename_prefix) {
+            saveTrackMontage(track_id, class_id, track_points, save_dir, filename_prefix);
+        });
+
+    int rec_index = 1;
+    cache_interval_ = 15;
+    const int DETECT_QUALITY_RATE = 14 * 60;
+    auto log_time = std::chrono::system_clock::now();
+    int local_frame_count = 0;
+    std::vector<DetectorRetData> abandon_results;
+    bool print_diff_time = true;
+    int lost_radar_count = 0;
+    ros::Rate loop_rate(15);
+
+    while (ros::ok()) {
+        // 从推理结果队列消费（帧+检测结果）
+        CameraResult cr;
+        g_result_queues[camera_id_].ConsumeSync(cr);
+        auto t0 = std::chrono::system_clock::now();
+
+        std::vector<DetectorRetData> res = std::move(cr.detections);
+        img_src = cr.frame;  // 浅拷贝，不涉及内存拷贝
+        img_time_sec = cr.img_time_sec;
+        img_time_nsec = cr.img_time_nsec;
+
+        // 抛洒物检测
+        rec_index++;
+        if (rec_index % abandon_rate == 0) {
+            AbandonInputData input_abandon_data;
+            input_abandon_data.im = img_src.clone();
+            input_abandon_data.data = res;
+            abandonRecQueue.Produce(std::move(input_abandon_data));
+        }
+
+        // 雷达数据
+        {
+            infer_nodelet::RadarTrackObjectProject::ConstPtr msg_track;
+            auto t_ = trackQueue[camera_id_].Consume(msg_track);
+            if (t_) {
+                radar_time_sec = msg_track->header.stamp.sec;
+                radar_time_nsec = msg_track->header.stamp.nsec;
+                lost_radar_count = 0;
+
+                int time_diff = img_time_sec * 1000 + img_time_nsec / 1000000 - radar_time_sec * 1000 - radar_time_nsec / 1000000;
+                if (print_diff_time) {
+                    if (time_diff < -400 || time_diff > 400) {
+                        LOG_WARN("Diff Time: %s %s  %d", camera_direction.c_str(), camera_type.c_str(), time_diff);
+                    } else {
+                        LOG_INFO("Diff Time: %s %s  %d", camera_direction.c_str(), camera_type.c_str(), time_diff);
+                    }
+                    print_diff_time = false;
+                }
+            } else {
+                lost_radar_count++;
+                if (lost_radar_count == 1000 && camera_direction != "" && camera_type != "") {
+                    LOG_WARN("No Radar Data %s %s %d", camera_direction.c_str(), camera_type.c_str(), lost_radar_count);
+                    lost_radar_count = 0;
+                }
+            }
+        }
+
+        // Cache frame for montage
+        if (write_flag) {
+            int current_fid = bytetrack.getFrameId() + 1;
+            if (current_fid % cache_interval_ == 0) {
+                cv::Mat small;
+                cv::resize(img_src, small, cv::Size(), 0.33, 0.33);
+                frame_cache_.push_back({current_fid, small.clone()});
+                while (frame_cache_.size() > MAX_CACHED_FRAMES)
+                    frame_cache_.pop_front();
+            }
+        }
+
+        // ByteTrack 跟踪
+        std::vector<STrack> output_stracks = bytetrack.update(res);
+
+        // 车辆颜色
+#if USE_SOPHON || USE_NVIDIA
+        while (true) {
+            VehicleColorResult vehicle_color_result;
+            auto _c = vehicleColorResultQueue.Consume(vehicle_color_result);
+            if (!_c) break;
+            bytetrack.updateVehicleColor(vehicle_color_result.tracker_id, vehicle_color_result.vehicle_color, vehicle_color_result.confidence);
+        }
+#endif
+
+        infer_nodelet::ImageDetectObject tracker_msg;
+        infer_nodelet::ImageDetectObjectSingle single_msg;
+        int objects_number = output_stracks.size();
+
+        for (auto bbox : output_stracks) {
+            int _id = bbox.track_id;
+            int x0 = max(0, (int)bbox.det_box[0]);
+            int y0 = max(0, (int)bbox.det_box[1]);
+            int w = max(0, (int)bbox.det_box[2]);
+            int h = max(0, (int)bbox.det_box[3]);
+
+            if (w <= 0 || h <= 0) continue;
+            cv::Rect r = cv::Rect(x0, y0, w, h);
+            if (x0 < 0 || y0 < 0 || x0 > img_src.cols || x0 + w > img_src.cols || w < 0 || h < 0 || y0 > img_src.rows || y0 + h > img_src.rows)
+                continue;
+
+#if USE_SOPHON || USE_NVIDIA
+            if (bbox.class_id > 2 && r.area() > 2000 && !bbox.color_lock) {
+                cv::Mat crop_vehicle_img = img_src(cv::Rect(r.x, r.y, r.width, r.height));
+                ModelInputData input_vehicle_data;
+                input_vehicle_data.im = crop_vehicle_img.clone();
+                input_vehicle_data.tracker_id = _id;
+                vehicleColorQueue.Produce(std::move(input_vehicle_data));
+            }
+#endif
+
+            single_msg.x_pixel_norm = std::clamp((float)r.x / img_src.cols, 0.0f, 1.0f);
+            single_msg.y_pixel_norm = std::clamp((float)r.y / img_src.rows, 0.0f, 1.0f);
+            single_msg.w_pixel_norm = std::clamp((float)r.width / img_src.cols, 0.0f, 1.0f);
+            single_msg.h_pixel_norm = std::clamp((float)r.height / img_src.rows, 0.0f, 1.0f);
+            single_msg.target_type = bbox.class_id;
+            single_msg.id = _id;
+            single_msg.color = bbox.vehicle_color;
+            single_msg.plate_number = bbox.plate_number;
+            single_msg.plate_confid = bbox.plate_confid;
+            single_msg.plate_color = bbox.plate_color;
+            tracker_msg.objects.push_back(single_msg);
+        }
+
+        // 添加抛洒物
+        {
+            DetectorRetDatas abandon_data;
+            while (true) {
+                auto _abandon = abandonResultQueue.Consume(abandon_data);
+                if (!_abandon) break;
+                else abandon_results = abandon_data.data;
+            }
+
+            for (unsigned _abandon_index = 0; _abandon_index < abandon_results.size(); _abandon_index++) {
+                single_msg.x_pixel_norm = std::clamp((float)abandon_results[_abandon_index].xmin / img_src.cols, 0.0f, 1.0f);
+                single_msg.y_pixel_norm = std::clamp((float)abandon_results[_abandon_index].ymin / img_src.rows, 0.0f, 1.0f);
+                single_msg.w_pixel_norm = std::clamp((float)(abandon_results[_abandon_index].xmax - abandon_results[_abandon_index].xmin) / img_src.cols, 0.0f, 1.0f);
+                single_msg.h_pixel_norm = std::clamp((float)(abandon_results[_abandon_index].ymax - abandon_results[_abandon_index].ymin) / img_src.rows, 0.0f, 1.0f);
+
+                if (abandon_results[_abandon_index].label == 1) {
+                    single_msg.target_type = 33;
+                    single_msg.id = 65536;
+                } else if (abandon_results[_abandon_index].label == 2) {
+                    single_msg.target_type = 35;
+                    single_msg.id = 65537;
+                } else if (abandon_results[_abandon_index].label == 3) {
+                    single_msg.target_type = 21;
+                    single_msg.id = 65538;
+                }
+
+                single_msg.color = 0;
+                single_msg.plate_confid = 0;
+                single_msg.plate_color = 0;
+                tracker_msg.objects.push_back(single_msg);
+                objects_number += 1;
+            }
+        }
+
+        tracker_msg.header.seq = 1;
+        tracker_msg.header.stamp.sec = img_time_sec;
+        tracker_msg.header.stamp.nsec = img_time_nsec;
+        tracker_msg.header.frame_id = "image";
+        tracker_msg.frame_seq += 1;
+        tracker_msg.objects_number = objects_number;
+        pub_tracker.publish(tracker_msg);
+
+        // 图像发布：写入 publish slot，由独立的 publishThread 异步消费
+        if (publish_img) {
+            std::lock_guard<std::mutex> lock(pub_slot_.mtx);
+            pub_slot_.frame = img_src.clone();
+            pub_slot_.stracks = output_stracks;
+            pub_slot_.abandon_results = abandon_results;
+            pub_slot_.ready = true;
+        }
+
+        publish_hz += 1;
+        local_frame_count++;
+
+        auto once_end_time = std::chrono::system_clock::now();
+        if (once_end_time - log_time > std::chrono::milliseconds(20000)) {
+            auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(once_end_time - log_time).count();
+            double fps = local_frame_count * 1000.0 / dt;
+            LOG_INFO("%s %s freq: %.1f fps", camera_direction.c_str(), camera_type.c_str(), fps);
+            local_frame_count = 0;
+            log_time = once_end_time;
+            print_diff_time = true;
+        }
+    }
+}
+
+void InferDet::publishThread() {
+    LOG_INFO("publishThread running...");
+    while (ros::ok()) {
+        cv::Mat frame;
+        std::vector<STrack> stracks;
+        std::vector<DetectorRetData> abandon_results;
+        bool has_data = false;
+        {
+            std::lock_guard<std::mutex> lock(pub_slot_.mtx);
+            if (pub_slot_.ready) {
+                frame = pub_slot_.frame.clone();
+                stracks = pub_slot_.stracks;
+                abandon_results = pub_slot_.abandon_results;
+                pub_slot_.ready = false;
+                has_data = true;
+            }
+        }
+        if (!has_data) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+
+        cv::Mat draw_img = frame.clone();
+
+        // Draw tracker visualization
+        if (draw_tracker) {
+            for (auto& bbox : stracks) {
+                int x0 = std::max(0, (int)bbox.det_box[0]);
+                int y0 = std::max(0, (int)bbox.det_box[1]);
+                int w = std::max(0, (int)bbox.det_box[2]);
+                int h = std::max(0, (int)bbox.det_box[3]);
+                if (w <= 0 || h <= 0) continue;
+                cv::Rect r(x0, y0, w, h);
+                if (x0 < 0 || y0 < 0 || x0 + w > draw_img.cols || y0 + h > draw_img.rows)
+                    continue;
+
+                if (draw_tracker) {
+                    for (auto& tp : bbox.track_points) {
+                        int track_x = (int)(tp[0] + tp[2] / 2);
+                        int track_y = (int)(tp[1] + tp[3]);
+                        cv::line(draw_img, cv::Point(track_x, track_y), cv::Point(track_x, track_y), vehicle_colors[bbox.vehicle_color], 3, 8);
+                    }
+                }
+
+                cv::Scalar color = vehicle_colors[bbox.vehicle_color];
+                if (bbox.state == TrackState::Lost) {
+                    for (int line_x = r.x; line_x < r.x + r.width; line_x += 8) {
+                        cv::line(draw_img, cv::Point(line_x, r.y), cv::Point(std::min(line_x + 4, r.x + r.width), r.y), color, 2);
+                        cv::line(draw_img, cv::Point(line_x, r.y + r.height), cv::Point(std::min(line_x + 4, r.x + r.width), r.y + r.height), color, 2);
+                    }
+                    for (int line_y = r.y; line_y < r.y + r.height; line_y += 8) {
+                        cv::line(draw_img, cv::Point(r.x, line_y), cv::Point(r.x, std::min(line_y + 4, r.y + r.height)), color, 2);
+                        cv::line(draw_img, cv::Point(r.x + r.width, line_y), cv::Point(r.x + r.width, std::min(line_y + 4, r.y + r.height)), color, 2);
+                    }
+                    cv::putText(draw_img, std::to_string(bbox.track_id) + "-" + std::to_string(bbox.class_id) + "(lost)",
+                                cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+                } else {
+                    cv::rectangle(draw_img, r, color, 2);
+                    cv::putText(draw_img, std::to_string(bbox.track_id) + "-" + std::to_string(bbox.class_id),
+                                cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+                }
+            }
+        }
+
+        // Draw abandon objects
+        for (auto& ad : abandon_results) {
+            cv::Rect r(ad.xmin, ad.ymin, ad.xmax - ad.xmin, ad.ymax - ad.ymin);
+            cv::rectangle(draw_img, r, vehicle_colors[0], 2);
+            const char* label = "?";
+            if (ad.label == 1) label = "c";
+            else if (ad.label == 2) label = "b";
+            else if (ad.label == 3) label = "d";
+            cv::putText(draw_img, label, cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 3);
+        }
+
+        cv_bridge::CvImage brigeImg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_img);
+        pub_img.publish(brigeImg.toImageMsg());
+    }
+}
+#endif
 
 
 // 图像质量检测
@@ -1218,7 +1659,12 @@ bool use_shm = false;
                 }
             }
             //infer_node->loadModel(model_paths);
+#if USE_SOPHON
+            // 使用全局共享检测器，不再加载独立模型
+            infer_node->setCameraId(next_thread_idx);
+#else
             infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
+#endif
             infer_node->load_abandon_model(model_paths[3],dev_id,abandon_class,abandon_stride);
 #if USE_SOPHON || USE_NVIDIA
             infer_node->load_color_model(model_paths[1]);
@@ -1244,6 +1690,10 @@ bool use_shm = false;
                 spawn(&InferDet::processRadarCamera, infer_node, thread_idx);
             }
             std::thread(&InferDet::processHz, infer_node).detach();
+#if USE_SOPHON
+            std::thread(&InferDet::processResult, infer_node).detach();
+            std::thread(&InferDet::publishThread, infer_node).detach();
+#endif
 #if USE_SOPHON || USE_NVIDIA
             std::thread(&InferDet::vehicleColor, infer_node).detach();
 #endif
@@ -1417,6 +1867,22 @@ private_nh.getParam("test/shm_name", param.shm_name);
 #endif
             LOG_INFO("Detected %d MLU device(s), distributing %zu cameras round-robin",
                      num_devices, infer_params.size());
+
+#if USE_SOPHON
+            // 创建全局共享的 YoloV8_det 检测器
+            g_shared_detector = std::make_unique<YoloV8_det>();
+            g_shared_detector->Init(model_paths[0]);
+            int batch_size = g_shared_detector->batch_size;
+            LOG_INFO("Global batch detector initialized, batch_size=%d", batch_size);
+
+            // 初始化结果队列（每个相机一个）
+            g_result_queues.resize(infer_params.size());
+            g_cam_frame_queues.resize(infer_params.size());
+
+            // 启动全局三段式流水线线程
+            std::thread(batch_preprocess_thread, batch_size).detach();
+            std::thread(batch_postprocess_thread).detach();
+#endif
 
             // Start inference threads -------------------------------------------
             for (size_t infer_index = 0; infer_index < infer_params.size(); infer_index++) {

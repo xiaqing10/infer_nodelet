@@ -20,6 +20,7 @@
 #include <time.h>
 #include <chrono>
 #include <thread>
+#include <memory>
 #include<vector>
 #include <opencv2/opencv.hpp>
 #include<opencv2/highgui/highgui.hpp>
@@ -34,6 +35,7 @@
 #include "traffic_analyzer.h"
 #if USE_SOPHON
 #include "sophon/resnet_sophon.hpp"
+#include "sophon/detector_sophon.hpp"
 #endif
 #include "shm/shmmem.h"
 #include "shm/packet.h"
@@ -86,6 +88,47 @@ struct AbandonInputData{
     std::vector<DetectorRetData>  data ;
 };
 
+#if USE_SOPHON
+// Batch pipeline: 输入帧
+struct BatchFrameData {
+    cv::Mat mat;
+    int camera_id;
+    int frame_width;
+    int frame_height;
+    double img_time_sec = 0.0;
+    double img_time_nsec = 0.0;
+};
+
+// Batch pipeline: 前向推理结果（供 post 线程消费）
+struct InferResult {
+    std::vector<bm_image> input_images;
+    std::vector<bm_tensor_t> output_tensors;
+    std::vector<std::pair<int, int>> txy_batch;
+    std::vector<std::pair<float, float>> ratios_batch;
+    std::vector<int> camera_ids;
+    std::vector<cv::Mat> frames;
+    std::vector<double> img_time_secs;
+    std::vector<double> img_time_nsecs;
+    int batch_size;
+};
+
+// 全局共享变量（声明为 inline，在头文件中定义）
+inline std::unique_ptr<YoloV8_det> g_shared_detector;
+inline SafeQueue<InferResult, 30> g_post_queue;
+
+// 每个相机的推理结果（帧+检测结果），由 processResult 线程消费
+struct CameraResult {
+    cv::Mat frame;
+    std::vector<DetectorRetData> detections;
+    double img_time_sec = 0.0;
+    double img_time_nsec = 0.0;
+};
+inline std::vector<SafeQueue<CameraResult, 3>> g_result_queues;
+
+// 每个相机的原始帧队列（processRadarCamera 入队，batch_preprocess_thread 出队）
+inline std::vector<SafeQueue<BatchFrameData, 3>> g_cam_frame_queues;
+#endif
+
 class InferDet {
 public:
     void loadParam(image_transport::Publisher pub_img,
@@ -110,7 +153,14 @@ public:
                        int min_points_len);
 void setShmParam(const std::string& shm_name);
 
+    void setCameraId(int id) { camera_id_ = id; }
+    int getCameraId() const { return camera_id_; }
+
     int processRadarCamera(int index);
+#if USE_SOPHON
+    void processResult();
+    void publishThread();
+#endif
     void processHz();
 #if USE_SOPHON || USE_NVIDIA
     void vehicleColor();
@@ -124,7 +174,10 @@ private:
     ros::Publisher pub_tracker;
     ros::Publisher pub_fps;
 
+    int camera_id_ = -1;
+#if !USE_SOPHON
     Detector detector;
+#endif
     Detector abandon_detector;
 #if USE_SOPHON
     RESNET vehicle_color_detector;
@@ -166,6 +219,16 @@ private:
 
     cv::Mat img_src;
 
+    // Publish slot: processResult writes latest frame+stracks, publishThread consumes
+    struct PublishSlot {
+        cv::Mat frame;
+        std::vector<STrack> stracks;
+        std::vector<DetectorRetData> abandon_results;
+        bool ready = false;
+        std::mutex mtx;
+    };
+    PublishSlot pub_slot_;
+
     struct CachedFrame {
         int frame_id;
         cv::Mat img;
@@ -184,9 +247,18 @@ inline std::vector<SafeQueue<sensor_msgs::ImageConstPtr, 3>> imgQueue; // 图像
 // SafeQueue<infer_nodelet::RadarTrackObjectProject, 10 > trackQueue;  // 雷达跟踪队列
 inline std::vector<SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3>> trackQueue;  // 雷达跟踪队列
 
-// 可视化和车颜色一致
-// 0，默认为绿色。 1：白，2：黑，3：红，4：黄，5：灰，6：蓝，7：绿，8：棕"
-inline std::vector<cv::Scalar> colors = {cv::Scalar(0, 255, 0),cv::Scalar(255, 255, 255), cv::Scalar(255, 128, 0), cv::Scalar(0, 0, 255), cv::Scalar(0, 255, 255), cv::Scalar(169, 169, 169), cv::Scalar(255, 0, 0), cv::Scalar(128, 255, 0), cv::Scalar(50, 0, 200), cv::Scalar(200, 0, 200), cv::Scalar(0, 128, 255)};
+// vehicle_color (模型输出 0-7): 0=白, 1=黑, 2=红, 3=黄, 4=灰, 5=蓝, 6=绿, 7=棕
+inline std::vector<cv::Scalar> vehicle_colors = {
+    cv::Scalar(255, 0, 255),  // 0: 默认
+    cv::Scalar(255, 255, 255),  // 0: 白
+    cv::Scalar(0, 0, 0),        // 1: 黑
+    cv::Scalar(0, 0, 255),      // 2: 红
+    cv::Scalar(0, 255, 255),    // 3: 黄
+    cv::Scalar(128, 128, 128),  // 4: 灰
+    cv::Scalar(255, 0, 0),      // 5: 蓝
+    cv::Scalar(0, 255, 0),      // 6: 绿
+    cv::Scalar(42, 42, 165),    // 7: 棕
+};
 
 
 // 输入的是抛洒物和原图，除以的是抛洒物的面积，不是并集.

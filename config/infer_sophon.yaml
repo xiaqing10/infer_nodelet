@@ -1,6 +1,6 @@
 # Set up your params
-use_shm: false
-det_engine_name: /home/files/rvf/share/infer_nodelet/model/kezhu.bmodel
+use_shm: true
+det_engine_name: /home/files/rvf/share/infer_nodelet/model/kezhu-det-4b.bmodel
 #det_engine_name: /home/files/rvf/share/infer_nodelet/model/yolov8s_int8_20241219_zz.bmodel
 #det_engine_name: /home/files/rvf/share/infer_nodelet/model/yolov8s_int8_20241219_sx.bmodel
 #det_engine_name: /home/files/rvf/share/infer_nodelet/model/m9-20251106.bmodel

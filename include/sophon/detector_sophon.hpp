@@ -53,6 +53,12 @@ class YoloV8_det {
     bool is_output_transposed = true;
 
 private:
+    static float get_aspect_scaled_ratio(int src_w, int src_h, int dst_w, int dst_h, bool* alignWidth);
+    int argmax(float* data, int num);
+    void xywh2xyxy(YoloV8BoxVec& xyxyboxes, std::vector<std::vector<float>> box);
+    void NMS(YoloV8BoxVec& dets, float nmsConfidence);
+    void clip_boxes(YoloV8BoxVec& yolobox_vec, int src_w, int src_h);
+public:
     int pre_process(const std::vector<bm_image>& images, 
                     bm_tensor_t& input_tensor,
                     std::vector<std::pair<int, int>>& txy_batch, 
@@ -64,13 +70,8 @@ private:
                      const std::vector<std::pair<int, int>>& txy_batch, 
                      const std::vector<std::pair<float, float>>& ratios_batch,
                      std::vector<YoloV8BoxVec>& boxes);
-    static float get_aspect_scaled_ratio(int src_w, int src_h, int dst_w, int dst_h, bool* alignWidth);
-    int argmax(float* data, int num);
-    void xywh2xyxy(YoloV8BoxVec& xyxyboxes, std::vector<std::vector<float>> box);
-    void NMS(YoloV8BoxVec& dets, float nmsConfidence);
-    void clip_boxes(YoloV8BoxVec& yolobox_vec, int src_w, int src_h);
-public:
     int Init(std::string bmodel_file );
+    int getOutputNum() const { return netinfo ? netinfo->output_num : 0; }
     bm_handle_t handle;
     int batch_size = -1;
     TimeStamp* m_ts = NULL;

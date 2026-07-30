@@ -51,15 +51,14 @@ endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/include/shm)
-link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm)
-set(SHM_LIBS shm)
+link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm /home/files/rvf/lib)
 
 # SHM (shared memory) support
 option(USE_SHM "Enable SHM (shared memory) support" OFF)
 if(USE_SHM)
     add_definitions(-DUSE_SHM=1)
     include_directories(${PROJECT_SOURCE_DIR}/include/shm)
-    link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm)
+link_directories(${PROJECT_SOURCE_DIR}/infer_mlu_lib/3rd/shm /home/files/rvf/lib)
     set(SHM_LIBS shm)
     message(STATUS "SHM support enabled")
 else()
@@ -163,6 +162,12 @@ file(GLOB sophon_srcs src/sophon/*.cpp)
 file(GLOB ascend_srcs src/ascend/*.cpp)
 file(GLOB nvidia_srcs src/nvidia/*.cpp)
 
+# 排除 test_*.cpp（它们有独立的 main）
+list(REMOVE_ITEM sophon_srcs
+    "${PROJECT_SOURCE_DIR}/src/sophon/test_simple.cpp"
+    "${PROJECT_SOURCE_DIR}/src/sophon/test_pipeline.cpp"
+)
+
 if(USE_CAMBRICON)
     add_library(infer_nodelet src/infer.cpp ${CN_TOOLS_DIR}/check.cpp ${CN_TOOLS_DIR}/Timer.cpp ${CN_INFERENCE_DIR}/Net.cc ${native_srcs} ${cambricon_srcs})
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
@@ -176,6 +181,18 @@ if(USE_SOPHON)
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
     target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${BM_LIBS} ${JPU_LIBS} ${SHM_LIBS} -lpthread -lavcodec -lavformat -lavutil)
+
+    add_executable(test_simple src/sophon/test_simple.cpp ${sophon_srcs})
+    add_dependencies(test_simple ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(test_simple ${catkin_LIBRARIES} roscpp roscpp_serialization rosconsole cv_bridge)
+    target_link_libraries(test_simple ${OPENCV_LIBS} ${BM_LIBS} ${JPU_LIBS} -lpthread -lavcodec -lavformat -lavutil -lrt)
+    target_link_libraries(test_simple shm)
+
+    add_executable(test_pipeline src/sophon/test_pipeline.cpp src/sophon/detector_sophon.cpp src/sophon/ff_decode_sophon.cpp src/sophon/resnet_sophon.cpp src/bytetrack.cpp src/strack.cpp src/kalmanfilter.cpp src/lapjv.cpp)
+    add_dependencies(test_pipeline ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(test_pipeline ${catkin_LIBRARIES} roscpp roscpp_serialization rosconsole cv_bridge)
+    target_link_libraries(test_pipeline ${OPENCV_LIBS} ${BM_LIBS} ${JPU_LIBS} -lpthread -lavcodec -lavformat -lavutil -lrt)
+    target_link_libraries(test_pipeline shm)
 endif()
 
 if(USE_ASCEND)
