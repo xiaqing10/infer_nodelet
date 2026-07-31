@@ -11,6 +11,9 @@
 #if USE_SOPHON
 #include "sophon/ff_decode_sophon.hpp"
 #endif
+#if USE_SOPHON || USE_RKNN
+#include "batch_pipeline_base.hpp"
+#endif
 #if USE_NVIDIA
 #include <cuda_runtime.h>
 #endif
@@ -22,7 +25,7 @@
 //#include <cnrt.h>
 using namespace std;
 
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
 static void batch_preprocess_thread(int batch_size) {
     LOG_INFO("[batch_pre] thread started, batch_size=%d", batch_size);
     int num_cameras = g_cam_frame_queues.size();
@@ -32,7 +35,6 @@ static void batch_preprocess_thread(int batch_size) {
         std::vector<BatchFrameData> batch_frames;
         std::vector<int> batch_camera_ids;
 
-        // Round-robin: take at most one frame per camera per round
         for (int i = 0; i < num_cameras && (int)batch_frames.size() < batch_size; i++) {
             int c = (round_start + i) % num_cameras;
             BatchFrameData fd;
@@ -50,46 +52,11 @@ static void batch_preprocess_thread(int batch_size) {
             continue;
         }
 
-        int n = batch_frames.size();
-        std::vector<bm_image> batch_imgs(n);
-        for (int i = 0; i < n; i++) {
-            cv::bmcv::toBMI(batch_frames[i].mat, &batch_imgs[i]);
-        }
-
-        bm_tensor_t input_tensor;
-        std::vector<bm_tensor_t> output_tensors;
-        output_tensors.resize(g_shared_detector->getOutputNum());
-        std::vector<std::pair<int, int>> txy_batch;
-        std::vector<std::pair<float, float>> ratios_batch;
-
-        int ret = g_shared_detector->pre_process(batch_imgs, input_tensor, txy_batch, ratios_batch);
-        if (ret != 0) {
-            LOG_ERROR("[batch_pre] pre_process failed");
-            for (auto& img : batch_imgs) bm_image_destroy(img);
-            continue;
-        }
-
-        ret = g_shared_detector->forward(input_tensor, output_tensors);
-        if (ret != 0) {
-            LOG_ERROR("[batch_pre] forward failed");
-            for (auto& img : batch_imgs) bm_image_destroy(img);
-            continue;
-        }
-
         InferResult ir;
-        ir.input_images = std::move(batch_imgs);
-        ir.output_tensors = std::move(output_tensors);
-        ir.txy_batch = std::move(txy_batch);
-        ir.ratios_batch = std::move(ratios_batch);
-        ir.camera_ids = std::move(batch_camera_ids);
-        ir.batch_size = n;
-        ir.frames.reserve(n);
-        ir.img_time_secs.reserve(n);
-        ir.img_time_nsecs.reserve(n);
-        for (int i = 0; i < n; i++) {
-            ir.frames.push_back(std::move(batch_frames[i].mat));
-            ir.img_time_secs.push_back(batch_frames[i].img_time_sec);
-            ir.img_time_nsecs.push_back(batch_frames[i].img_time_nsec);
+        int ret = g_pipeline->preprocessAndInfer(batch_frames, ir);
+        if (ret != 0) {
+            LOG_ERROR("[batch_pre] preprocessAndInfer failed");
+            continue;
         }
 
         g_post_queue.Produce(std::move(ir));
@@ -104,38 +71,14 @@ static void batch_postprocess_thread() {
             continue;
         }
 
-        std::vector<YoloV8BoxVec> boxes;
-        int ret = g_shared_detector->post_process(ir.input_images, ir.output_tensors,
-                                                   ir.txy_batch, ir.ratios_batch, boxes);
-        if (ret != 0) {
-            LOG_ERROR("[batch_post] post_process failed");
-            for (auto& img : ir.input_images) bm_image_destroy(img);
-            continue;
-        }
-
         for (int i = 0; i < ir.batch_size; i++) {
             int cam_id = ir.camera_ids[i];
-            std::vector<DetectorRetData> det_results;
-            for (auto& box : boxes[i]) {
-                DetectorRetData d;
-                d.label = box.class_id;
-                d.confidence = box.score;
-                d.xmin = (int)box.x1;
-                d.ymin = (int)box.y1;
-                d.xmax = (int)box.x2;
-                d.ymax = (int)box.y2;
-                det_results.push_back(d);
-            }
             CameraResult cr;
             cr.frame = std::move(ir.frames[i]);
-            cr.detections = std::move(det_results);
+            cr.detections = std::move(ir.detections[i]);
             cr.img_time_sec = ir.img_time_secs[i];
             cr.img_time_nsec = ir.img_time_nsecs[i];
             g_result_queues[cam_id].Produce(std::move(cr));
-        }
-
-        for (auto& img : ir.input_images) {
-            bm_image_destroy(img);
         }
     }
 }
@@ -429,7 +372,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
         frame.copyTo(img_src);
 
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
         {
             BatchFrameData bfd;
             bfd.mat = frame.clone();
@@ -751,7 +694,7 @@ int  InferDet::processRadarCamera(int index){
     infer_nodelet::RadarTrackObjectProject::ConstPtr  msg_track;
 
     // 如果是SHM模式，启动独立读取线程
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
     if (use_shm) {
         std::thread([this, index]() {
             while (ros::ok()) {
@@ -874,10 +817,10 @@ if (use_shm)
             }
 else{
             // LOG_INFO("START TO INFER & TRACKER");
-#if !USE_SOPHON
+#if !USE_SOPHON && !USE_RKNN
             mat_receive.copyTo(img_src);
 #endif
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
             // Batch pipeline: push frame to per-camera queue, return immediately
             BatchFrameData bfd;
             bfd.mat = mat_receive.clone();
@@ -1162,7 +1105,7 @@ cv::Scalar color = vehicle_colors[0];
 return 0;
 }
 
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
 void InferDet::processResult() {
     LOG_INFO("processResult thread running...");
 
@@ -1659,8 +1602,8 @@ bool use_shm = false;
                 }
             }
             //infer_node->loadModel(model_paths);
-#if USE_SOPHON
-            // 使用全局共享检测器，不再加载独立模型
+#if USE_SOPHON || USE_RKNN
+            // 使用全局共享 pipeline，不再加载独立模型
             infer_node->setCameraId(next_thread_idx);
 #else
             infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
@@ -1690,7 +1633,7 @@ bool use_shm = false;
                 spawn(&InferDet::processRadarCamera, infer_node, thread_idx);
             }
             std::thread(&InferDet::processHz, infer_node).detach();
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
             std::thread(&InferDet::processResult, infer_node).detach();
             std::thread(&InferDet::publishThread, infer_node).detach();
 #endif
@@ -1869,11 +1812,25 @@ private_nh.getParam("test/shm_name", param.shm_name);
                      num_devices, infer_params.size());
 
 #if USE_SOPHON
-            // 创建全局共享的 YoloV8_det 检测器
-            g_shared_detector = std::make_unique<YoloV8_det>();
-            g_shared_detector->Init(model_paths[0]);
-            int batch_size = g_shared_detector->batch_size;
-            LOG_INFO("Global batch detector initialized, batch_size=%d", batch_size);
+            // 创建全局共享的 Sophon pipeline
+            g_pipeline = std::make_unique<SophonPipeline>();
+            g_pipeline->init(model_paths[0]);
+            int batch_size = g_pipeline->getBatchSize();
+            LOG_INFO("Global Sophon pipeline initialized, batch_size=%d", batch_size);
+
+            // 初始化结果队列（每个相机一个）
+            g_result_queues.resize(infer_params.size());
+            g_cam_frame_queues.resize(infer_params.size());
+
+            // 启动全局三段式流水线线程
+            std::thread(batch_preprocess_thread, batch_size).detach();
+            std::thread(batch_postprocess_thread).detach();
+#elif USE_RKNN
+            // 创建全局共享的 RKNN pipeline
+            g_pipeline = std::make_unique<RknnPipeline>();
+            g_pipeline->init(model_paths[0]);
+            int batch_size = g_pipeline->getBatchSize();
+            LOG_INFO("Global RKNN pipeline initialized, batch_size=%d", batch_size);
 
             // 初始化结果队列（每个相机一个）
             g_result_queues.resize(infer_params.size());

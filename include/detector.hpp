@@ -14,6 +14,8 @@
 #include "ascend/detector_ascend.hpp"
 #elif USE_NVIDIA
 #include "nvidia/detector_nvidia.hpp"
+#elif USE_RKNN
+#include "rknn/detector_rknn.hpp"
 #endif
 
 typedef struct DetectorRetData{
@@ -52,6 +54,8 @@ private:
 #elif USE_ASCEND
     YoloV8_det yolo_det;
 #elif USE_NVIDIA
+    YoloV8_det yolo_det;
+#elif USE_RKNN
     YoloV8_det yolo_det;
 #endif
 };

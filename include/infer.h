@@ -1,4 +1,3 @@
-
 // ros 相关
 #include <nodelet/nodelet.h>
 #include <ros/ros.h> 
@@ -33,9 +32,13 @@
 #include "bytetrack.h"
 #include "safeq.hpp"
 #include "traffic_analyzer.h"
+#include "batch_pipeline_base.hpp"
 #if USE_SOPHON
 #include "sophon/resnet_sophon.hpp"
-#include "sophon/detector_sophon.hpp"
+#include "sophon/sophon_pipeline.hpp"
+#endif
+#if USE_RKNN
+#include "rknn/rknn_pipeline.hpp"
 #endif
 #include "shm/shmmem.h"
 #include "shm/packet.h"
@@ -88,44 +91,11 @@ struct AbandonInputData{
     std::vector<DetectorRetData>  data ;
 };
 
-#if USE_SOPHON
-// Batch pipeline: 输入帧
-struct BatchFrameData {
-    cv::Mat mat;
-    int camera_id;
-    int frame_width;
-    int frame_height;
-    double img_time_sec = 0.0;
-    double img_time_nsec = 0.0;
-};
-
-// Batch pipeline: 前向推理结果（供 post 线程消费）
-struct InferResult {
-    std::vector<bm_image> input_images;
-    std::vector<bm_tensor_t> output_tensors;
-    std::vector<std::pair<int, int>> txy_batch;
-    std::vector<std::pair<float, float>> ratios_batch;
-    std::vector<int> camera_ids;
-    std::vector<cv::Mat> frames;
-    std::vector<double> img_time_secs;
-    std::vector<double> img_time_nsecs;
-    int batch_size;
-};
-
-// 全局共享变量（声明为 inline，在头文件中定义）
-inline std::unique_ptr<YoloV8_det> g_shared_detector;
+// 全局 batch pipeline 接口（平台无关）
+#if USE_SOPHON || USE_RKNN
+inline std::unique_ptr<BatchPipeline> g_pipeline;
 inline SafeQueue<InferResult, 30> g_post_queue;
-
-// 每个相机的推理结果（帧+检测结果），由 processResult 线程消费
-struct CameraResult {
-    cv::Mat frame;
-    std::vector<DetectorRetData> detections;
-    double img_time_sec = 0.0;
-    double img_time_nsec = 0.0;
-};
 inline std::vector<SafeQueue<CameraResult, 3>> g_result_queues;
-
-// 每个相机的原始帧队列（processRadarCamera 入队，batch_preprocess_thread 出队）
 inline std::vector<SafeQueue<BatchFrameData, 3>> g_cam_frame_queues;
 #endif
 
@@ -157,7 +127,7 @@ void setShmParam(const std::string& shm_name);
     int getCameraId() const { return camera_id_; }
 
     int processRadarCamera(int index);
-#if USE_SOPHON
+#if USE_SOPHON || USE_RKNN
     void processResult();
     void publishThread();
 #endif
@@ -175,7 +145,7 @@ private:
     ros::Publisher pub_fps;
 
     int camera_id_ = -1;
-#if !USE_SOPHON
+#if !USE_SOPHON && !USE_RKNN
     Detector detector;
 #endif
     Detector abandon_detector;
@@ -317,4 +287,3 @@ inline void bytetrack_yaml_parse(const std::string& config_path,
     }
   }
 }
-
