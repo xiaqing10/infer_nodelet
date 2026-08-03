@@ -1,11 +1,13 @@
 #include <iostream>
 #include <string>
+#include <cstring>
 #include "rknn_test.h"
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << " <model.rknn> <image.jpg> [output.jpg] [num_classes]"
+        std::cout << "Usage: " << argv[0] << " [--yolov5] <model.rknn> <image.jpg> [output.jpg] [num_classes]"
                   << std::endl;
+        std::cout << "  --yolov5     : use YOLOv5 postprocessing (default: auto-detect)" << std::endl;
         std::cout << "  model.rknn   : path to RKNN model file" << std::endl;
         std::cout << "  image.jpg    : path to input image" << std::endl;
         std::cout << "  output.jpg   : path to save output image (default: output.jpg)" << std::endl;
@@ -13,13 +15,27 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string model_path = argv[1];
-    std::string image_path = argv[2];
+    bool use_yolov5 = false;
+    int arg_idx = 1;
+
+    if (argc > 1 && (strcmp(argv[1], "--yolov5") == 0 || strcmp(argv[1], "-y5") == 0)) {
+        use_yolov5 = true;
+        arg_idx = 2;
+    }
+
+    if (argc < arg_idx + 2) {
+        std::cerr << "Missing model/image arguments" << std::endl;
+        return 1;
+    }
+
+    std::string model_path = argv[arg_idx];
+    std::string image_path = argv[arg_idx + 1];
     std::string output_path = "output.jpg";
     int num_classes = 10;
-    if (argc >= 4) {
-        std::string arg3 = argv[3];
-        // Check if arg3 is a number (num_classes) or a filename
+
+    int remaining = argc - (arg_idx + 2);
+    if (remaining >= 1) {
+        std::string arg3 = argv[arg_idx + 2];
         bool is_num = !arg3.empty() && arg3.find_first_not_of("0123456789") == std::string::npos;
         if (is_num) {
             num_classes = std::stoi(arg3);
@@ -27,14 +43,15 @@ int main(int argc, char** argv) {
             output_path = arg3;
         }
     }
-    if (argc >= 5) {
-        num_classes = std::stoi(argv[4]);
+    if (remaining >= 2) {
+        num_classes = std::stoi(argv[arg_idx + 3]);
     }
 
     std::cout << "=== RKNN YOLO Test ===" << std::endl;
     std::cout << "Model: " << model_path << std::endl;
     std::cout << "Image: " << image_path << std::endl;
     std::cout << "Output: " << output_path << std::endl;
+    std::cout << "Mode: " << (use_yolov5 ? "YOLOv5" : "auto-detect") << std::endl;
     std::cout << "Num classes: " << num_classes << std::endl;
 
     cv::Mat img = cv::imread(image_path);
@@ -45,6 +62,7 @@ int main(int argc, char** argv) {
     std::cout << "Image size: " << img.cols << "x" << img.rows << std::endl;
 
     RknnTest test(model_path, num_classes);
+    test.setYoloV5(use_yolov5);
 
     auto t0 = std::chrono::steady_clock::now();
     std::vector<RknnDetection> detections = test.runInference(img);

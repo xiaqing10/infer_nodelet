@@ -1,4 +1,5 @@
 #include "rknn_pipeline.hpp"
+#include "detector.hpp"
 
 int RknnPipeline::init(const std::string& model_path) {
     return detector_.Init(model_path);
