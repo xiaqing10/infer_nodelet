@@ -6,7 +6,8 @@
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << " <model.rknn> <image.jpg> [num_iters] [num_classes]" << std::endl;
+        std::cout << "Usage: " << argv[0] << " [options] <model.rknn> <image.jpg> [num_iters] [num_classes]" << std::endl;
+        std::cout << "  --core-mask MASK : set NPU core mask (auto/0/1/2/0_1/0_1_2, default: auto)" << std::endl;
         std::cout << "  model.rknn   : path to RKNN model file" << std::endl;
         std::cout << "  image.jpg    : path to input image" << std::endl;
         std::cout << "  num_iters    : number of inference iterations (default: 100)" << std::endl;
@@ -14,13 +15,35 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string model_path = argv[1];
-    std::string image_path = argv[2];
+    std::string core_mask = "auto";
+    int arg_idx = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--core-mask") == 0) {
+            if (i + 1 < argc) {
+                core_mask = argv[++i];
+                arg_idx = i + 1;
+            } else {
+                std::cerr << "--core-mask requires an argument" << std::endl;
+                return 1;
+            }
+        } else {
+            arg_idx = i;
+            break;
+        }
+    }
+
+    if (argc < arg_idx + 2) {
+        std::cerr << "Missing model/image arguments" << std::endl;
+        return 1;
+    }
+
+    std::string model_path = argv[arg_idx];
+    std::string image_path = argv[arg_idx + 1];
     int num_iters = 100;
     int num_classes = 10;
 
-    if (argc >= 4) num_iters = std::stoi(argv[3]);
-    if (argc >= 5) num_classes = std::stoi(argv[4]);
+    if (argc >= arg_idx + 3) num_iters = std::stoi(argv[arg_idx + 2]);
+    if (argc >= arg_idx + 4) num_classes = std::stoi(argv[arg_idx + 3]);
 
     cv::Mat img = cv::imread(image_path);
     if (img.empty()) {
@@ -33,9 +56,11 @@ int main(int argc, char** argv) {
     std::cout << "Image: " << image_path << " (" << img.cols << "x" << img.rows << ")" << std::endl;
     std::cout << "Iterations: " << num_iters << std::endl;
     std::cout << "Num classes: " << num_classes << std::endl;
+    std::cout << "Core mask: " << core_mask << std::endl;
     std::cout << std::endl;
 
     RknnTest test(model_path, num_classes);
+    test.setCoreMask(core_mask);
     // Auto-detect: 3 outputs -> YOLOv5, 1 output -> YOLOv8
     test.setYoloV5(test.getNumOutputs() >= 3);
 

@@ -48,8 +48,10 @@ class BYTETracker {
   ~BYTETracker();
 
   vector<STrack> update(const vector<DetectorRetData>& objects);
+#if USE_SOPHON
   TimeStamp* m_ts;
   void enableProfile(TimeStamp* ts);
+#endif
   int updateVehicleColor(int xxTracker_id, int vehicle_color, float score);
 
   void setTrackRemovedCallback(TrackRemovedCallback cb) { track_removed_cb_ = cb; }

@@ -5,9 +5,12 @@
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << " [--yolov5] <model.rknn> <image.jpg> [output.jpg] [num_classes]"
+        std::cout << "Usage: " << argv[0] << " [options] <model.rknn> <image.jpg> [output.jpg] [num_classes]"
                   << std::endl;
-        std::cout << "  --yolov5     : use YOLOv5 postprocessing (default: auto-detect)" << std::endl;
+        std::cout << "  --yolov5,-y5 : use YOLOv5 postprocessing (default: auto-detect)" << std::endl;
+        std::cout << "  --letterbox  : use letterbox preprocessing (default: direct resize)" << std::endl;
+        std::cout << "  --sigmoid    : apply sigmoid after dequant (default: off)" << std::endl;
+        std::cout << "  --core-mask MASK : set NPU core mask (auto/0/1/2/0_1/0_1_2, default: auto)" << std::endl;
         std::cout << "  model.rknn   : path to RKNN model file" << std::endl;
         std::cout << "  image.jpg    : path to input image" << std::endl;
         std::cout << "  output.jpg   : path to save output image (default: output.jpg)" << std::endl;
@@ -16,11 +19,29 @@ int main(int argc, char** argv) {
     }
 
     bool use_yolov5 = false;
+    bool use_letterbox = false;
+    bool use_sigmoid = false;
+    std::string core_mask = "auto";
     int arg_idx = 1;
 
-    if (argc > 1 && (strcmp(argv[1], "--yolov5") == 0 || strcmp(argv[1], "-y5") == 0)) {
-        use_yolov5 = true;
-        arg_idx = 2;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--yolov5") == 0 || strcmp(argv[i], "-y5") == 0) {
+            use_yolov5 = true;
+        } else if (strcmp(argv[i], "--letterbox") == 0) {
+            use_letterbox = true;
+        } else if (strcmp(argv[i], "--sigmoid") == 0) {
+            use_sigmoid = true;
+        } else if (strcmp(argv[i], "--core-mask") == 0) {
+            if (i + 1 < argc) {
+                core_mask = argv[++i];
+            } else {
+                std::cerr << "--core-mask requires an argument" << std::endl;
+                return 1;
+            }
+        } else {
+            arg_idx = i;
+            break;
+        }
     }
 
     if (argc < arg_idx + 2) {
@@ -52,6 +73,9 @@ int main(int argc, char** argv) {
     std::cout << "Image: " << image_path << std::endl;
     std::cout << "Output: " << output_path << std::endl;
     std::cout << "Mode: " << (use_yolov5 ? "YOLOv5" : "auto-detect") << std::endl;
+    std::cout << "Preprocess: " << (use_letterbox ? "letterbox" : "direct resize") << std::endl;
+    std::cout << "Sigmoid: " << (use_sigmoid ? "on" : "off") << std::endl;
+    std::cout << "Core mask: " << core_mask << std::endl;
     std::cout << "Num classes: " << num_classes << std::endl;
 
     cv::Mat img = cv::imread(image_path);
@@ -62,7 +86,10 @@ int main(int argc, char** argv) {
     std::cout << "Image size: " << img.cols << "x" << img.rows << std::endl;
 
     RknnTest test(model_path, num_classes);
+    test.setCoreMask(core_mask);
     test.setYoloV5(use_yolov5);
+    test.setUseLetterbox(use_letterbox);
+    test.setUseSigmoid(use_sigmoid);
 
     auto t0 = std::chrono::steady_clock::now();
     std::vector<RknnDetection> detections = test.runInference(img);

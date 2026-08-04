@@ -61,7 +61,9 @@ int BYTETracker::updateVehicleColor(int xxTracker_id, int vehicle_color, float s
     return 0;
 }
 
+#if USE_SOPHON
 void BYTETracker::enableProfile(TimeStamp* ts) { m_ts = ts; }
+#endif
 
 
 // 递归创建目录（类似 mkdir -p）

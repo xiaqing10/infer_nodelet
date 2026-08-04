@@ -9,21 +9,23 @@ int RknnPipeline::preprocessAndInfer(
     const std::vector<BatchFrameData>& batch_frames,
     InferResult& result) {
     int n = batch_frames.size();
-    std::vector<cv::Mat> batch_imgs(n);
-    for (int i = 0; i < n; i++) {
-        batch_imgs[i] = batch_frames[i].mat;
-    }
+    if (n == 0) return 0;
 
-    std::vector<YoloV8BoxVec> boxes;
-    int ret = detector_.Detect(batch_imgs, boxes);
-    if (ret != 0) {
-        return ret;
-    }
-
-    // Convert YoloV8Box to DetectorRetData
     result.detections.resize(n);
+    result.frames.resize(n);
+    result.camera_ids.resize(n);
+    result.img_time_secs.resize(n);
+    result.img_time_nsecs.resize(n);
+    result.batch_size = n;
+
     for (int i = 0; i < n; i++) {
-        for (auto& box : boxes[i]) {
+        YoloV8BoxVec boxes;
+        int ret = detector_.Detect(batch_frames[i].mat, boxes);
+        if (ret != 0) {
+            return ret;
+        }
+
+        for (auto& box : boxes) {
             DetectorRetData d;
             d.label = box.class_id;
             d.confidence = box.score;
@@ -33,15 +35,7 @@ int RknnPipeline::preprocessAndInfer(
             d.ymax = (int)box.y2;
             result.detections[i].push_back(d);
         }
-    }
 
-    result.frames.resize(n);
-    result.camera_ids.resize(n);
-    result.img_time_secs.resize(n);
-    result.img_time_nsecs.resize(n);
-    result.batch_size = n;
-
-    for (int i = 0; i < n; i++) {
         result.frames[i] = batch_frames[i].mat.clone();
         result.camera_ids[i] = batch_frames[i].camera_id;
         result.img_time_secs[i] = batch_frames[i].img_time_sec;

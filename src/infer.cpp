@@ -145,7 +145,7 @@ void InferDet::loadModel(const std::vector<std::string>& model_paths) {
 
 
 void  InferDet::load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride){
-#if !USE_SOPHON
+#if !USE_SOPHON && !USE_RKNN
     LOG_INFO("Loding... DETRECTOR Model %s", model_path.c_str());
     detector.init(model_path, mlu_infer_device, num_class, stride);
 #else
@@ -1807,6 +1807,8 @@ private_nh.getParam("test/shm_name", param.shm_name);
                 num_devices = 1;
             }
             if (num_devices == 0) num_devices = 1;
+#else
+            int num_devices = 1;
 #endif
             LOG_INFO("Detected %d MLU device(s), distributing %zu cameras round-robin",
                      num_devices, infer_params.size());

@@ -290,10 +290,9 @@ void Detector::init(std::string model, int device_id, int num_class, int stride)
 
 std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
     std::vector<DetectorRetData> infer_result;
-    std::vector<cv::Mat> batch_imgs = {img};
-    std::vector<YoloV8BoxVec> boxes;
-    yolo_det.Detect(batch_imgs, boxes);
-    for (auto& box : boxes[0]) {
+    YoloV8BoxVec boxes;
+    yolo_det.Detect(img, boxes);
+    for (auto& box : boxes) {
         DetectorRetData d;
         d.label = box.class_id;
         d.confidence = box.score;

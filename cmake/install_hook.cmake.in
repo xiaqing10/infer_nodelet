@@ -75,6 +75,14 @@ execute_process(
 )
 endif()
 
+if(@USE_RKNN_CMAKE@)
+execute_process(
+    COMMAND  cp    -ar ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer_rknn.yaml     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/config/infer.yaml
+    COMMAND  cp    -ar ${CMAKE_INSTALL_PREFIX}/share/infer_nodelet/model/rknn     ${CPACK_OUTOUT_DIRECTORY}/${CPACK_DEBIAN_RELOCATE_DIR}/share/infer_nodelet/model
+)
+endif()
+
+
 
 message("@ 4 CPACK_OUTOUT_DIRECTORY ${CPACK_OUTOUT_DIRECTORY}")
 

@@ -11,7 +11,7 @@ public:
     int preprocessAndInfer(
         const std::vector<BatchFrameData>& batch_frames,
         InferResult& result) override;
-    int getBatchSize() const override { return detector_.batch_size; }
+    int getBatchSize() const override { return 1; }
 
     YoloV8_det& getDetector() { return detector_; }
 
@@ -19,4 +19,4 @@ private:
     YoloV8_det detector_;
 };
 
-#endif // RKNN_PIPELINE_H
+#endif

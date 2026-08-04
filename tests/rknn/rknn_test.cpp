@@ -14,10 +14,6 @@ static const std::vector<cv::Scalar> kColors = {
     {64, 128, 255}
 };
 
-static inline float sigmoid(float x) {
-    return 1.0f / (1.0f + std::exp(-x));
-}
-
 RknnTest::RknnTest(const std::string& model_path, int num_classes)
     : num_classes_(num_classes) {
     FILE* fp = fopen(model_path.c_str(), "rb");
@@ -29,7 +25,8 @@ RknnTest::RknnTest(const std::string& model_path, int num_classes)
     size_t model_size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
     void* model_data = malloc(model_size);
-    fread(model_data, 1, model_size, fp);
+    size_t nread = fread(model_data, 1, model_size, fp);
+    (void)nread;
     fclose(fp);
 
     int ret = rknn_init(&ctx_, model_data, model_size, 0, NULL);
@@ -37,6 +34,13 @@ RknnTest::RknnTest(const std::string& model_path, int num_classes)
     if (ret < 0) {
         std::cerr << "rknn_init failed: " << ret << std::endl;
         return;
+    }
+
+    ret = rknn_set_core_mask(ctx_, core_mask_);
+    if (ret < 0) {
+        std::cerr << "rknn_set_core_mask failed: " << ret << ", fallback to auto" << std::endl;
+    } else {
+        std::cout << "RKNN core mask set successfully" << std::endl;
     }
 
     rknn_input_output_num io_num;
@@ -73,7 +77,6 @@ RknnTest::RknnTest(const std::string& model_path, int num_classes)
                       << out_attr.dims[2] << "x" << out_attr.dims[3]
                       << " fmt=" << (out_attr.fmt == RKNN_TENSOR_NCHW ? "NCHW" : "NHWC")
                       << std::endl;
-            // Auto-detect num_classes from first output
             if (i == 0) {
                 int cls_from_model = out_attr.dims[1] - 5;
                 if (cls_from_model > 0 && cls_from_model < 100) {
@@ -104,6 +107,25 @@ RknnTest::~RknnTest() {
     }
 }
 
+void RknnTest::setCoreMask(const std::string& mask_str) {
+    if (mask_str == "auto") {
+        core_mask_ = RKNN_NPU_CORE_AUTO;
+    } else if (mask_str == "0") {
+        core_mask_ = RKNN_NPU_CORE_0;
+    } else if (mask_str == "1") {
+        core_mask_ = RKNN_NPU_CORE_1;
+    } else if (mask_str == "2") {
+        core_mask_ = RKNN_NPU_CORE_2;
+    } else if (mask_str == "0_1") {
+        core_mask_ = RKNN_NPU_CORE_0_1;
+    } else if (mask_str == "0_1_2") {
+        core_mask_ = RKNN_NPU_CORE_0_1_2;
+    } else {
+        std::cerr << "Unknown core mask: " << mask_str << ", using default" << std::endl;
+    }
+    std::cout << "RKNN core mask set to: " << mask_str << std::endl;
+}
+
 void RknnTest::letterbox(const cv::Mat& img, cv::Mat& out, float& scale, int& tx, int& ty) {
     int src_w = img.cols;
     int src_h = img.rows;
@@ -124,10 +146,29 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
     std::vector<RknnDetection> detections;
     if (!ctx_ || img.empty()) return detections;
 
-    float scale;
-    int tx, ty;
-    cv::Mat letterboxed;
-    letterbox(img, letterboxed, scale, tx, ty);
+    cv::Mat rgb;
+    cv::cvtColor(img, rgb, cv::COLOR_BGR2RGB);
+
+    cv::Mat model_input;
+    float scale_x = (float)img.cols / net_w_;
+    float scale_y = (float)img.rows / net_h_;
+
+    if (use_letterbox_) {
+        // Letterbox: keep aspect ratio + gray padding
+        letterbox(rgb, model_input, letterbox_scale_, pad_left_, pad_top_);
+        // Coordinates in 640x640 space → map back to original: (x - pad) / letterbox_scale
+        scale_x = 1.0f / letterbox_scale_;
+        scale_y = 1.0f / letterbox_scale_;
+    } else {
+        // Direct resize (same as Python convert.py)
+        cv::resize(rgb, model_input, cv::Size(net_w_, net_h_));
+        pad_left_ = 0;
+        pad_top_ = 0;
+        letterbox_scale_ = 1.0f;
+        // Coordinates in 640x640 space → map back to original: x * (img_w / 640)
+        scale_x = (float)img.cols / net_w_;
+        scale_y = (float)img.rows / net_h_;
+    }
 
     rknn_input inputs[1];
     memset(inputs, 0, sizeof(inputs));
@@ -135,7 +176,7 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
     inputs[0].type = RKNN_TENSOR_UINT8;
     inputs[0].size = net_w_ * net_h_ * 3;
     inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].buf = letterboxed.data;
+    inputs[0].buf = model_input.data;
 
     int ret = rknn_inputs_set(ctx_, 1, inputs);
     if (ret < 0) {
@@ -163,9 +204,9 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
     }
 
     if (use_yolov5_) {
-        // Read output scales/zps for dequantization
         std::vector<float> out_scales(num_outputs_);
         std::vector<int32_t> out_zps(num_outputs_);
+        int num_classes = num_classes_;
         for (int i = 0; i < num_outputs_; i++) {
             rknn_tensor_attr out_attr;
             memset(&out_attr, 0, sizeof(out_attr));
@@ -173,38 +214,46 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
             rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &out_attr, sizeof(out_attr));
             out_scales[i] = out_attr.scale;
             out_zps[i] = out_attr.zp;
+            if (i == 0) {
+                int channels = out_attr.dims[1];
+                num_classes = channels / 3 - 5;
+                if (num_classes < 1 || num_classes > 100) num_classes = num_classes_;
+            }
         }
 
-        // Use the original post_process function from the user's project
         BOX_RECT pads;
-        pads.left = tx;
-        pads.top = ty;
-        pads.right = net_w_ - (net_w_ - (int)(img.cols * scale)) / 2 - (int)(img.cols * scale);
-        pads.bottom = net_h_ - (net_h_ - (int)(img.rows * scale)) / 2 - (int)(img.rows * scale);
+        memset(&pads, 0, sizeof(pads));
+        float scale_w = 1.0f;
+        float scale_h = 1.0f;
 
-        float scale_w = scale;
-        float scale_h = scale;
+        if (use_letterbox_) {
+            pads.left = pad_left_;
+            pads.top = pad_top_;
+            pads.right = pad_left_;
+            pads.bottom = pad_top_;
+            scale_w = 1.0f / letterbox_scale_;
+            scale_h = 1.0f / letterbox_scale_;
+        }
 
         detect_result_group_t detect_result_group;
         post_process((int8_t*)outputs[0].buf, (int8_t*)outputs[1].buf, (int8_t*)outputs[2].buf,
-                     net_h_, net_w_,
+                     net_h_, net_w_, num_classes,
                      conf_threshold_, nms_threshold_,
                      pads, scale_w, scale_h,
-                     out_zps, out_scales, &detect_result_group);
+                     out_zps, out_scales, &detect_result_group, use_sigmoid_);
 
         for (int i = 0; i < detect_result_group.count; i++) {
             detect_result_t* det = &detect_result_group.results[i];
             RknnDetection d;
             d.class_id = det->class_id;
             d.confidence = det->prop;
-            d.box.x = det->box.left;
-            d.box.y = det->box.top;
-            d.box.width = det->box.right - det->box.left;
-            d.box.height = det->box.bottom - det->box.top;
+            d.box.x = (int)(det->box.left * scale_x);
+            d.box.y = (int)(det->box.top * scale_y);
+            d.box.width = (int)((det->box.right - det->box.left) * scale_x);
+            d.box.height = (int)((det->box.bottom - det->box.top) * scale_y);
             detections.push_back(d);
         }
     } else {
-        // Single output detect (YOLOv8 style)
         float* data = (float*)outputs[0].buf;
         rknn_tensor_attr out_attr;
         memset(&out_attr, 0, sizeof(out_attr));
@@ -212,7 +261,16 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
         rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &out_attr, sizeof(out_attr));
         int box_num = out_attr.dims[2];
         int nout = out_attr.dims[1];
-        detections = decodeYoloV8(data, box_num, nout, scale, tx, ty, img.cols, img.rows);
+        // No padding: scale = 1.0, tx = ty = 0
+        detections = decodeYoloV8(data, box_num, nout, 1.0f, 0, 0, img.cols, img.rows);
+        float inv_scale_w = (float)img.cols / net_w_;
+        float inv_scale_h = (float)img.rows / net_h_;
+        for (auto& d : detections) {
+            d.box.x = (int)(d.box.x * inv_scale_w);
+            d.box.y = (int)(d.box.y * inv_scale_h);
+            d.box.width = (int)(d.box.width * inv_scale_w);
+            d.box.height = (int)(d.box.height * inv_scale_h);
+        }
     }
 
     rknn_outputs_release(ctx_, num_outputs_, outputs.data());
@@ -222,10 +280,15 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
 void RknnTest::runInferenceOnly(const cv::Mat& img) {
     if (!ctx_ || img.empty()) return;
 
-    float scale;
-    int tx, ty;
-    cv::Mat letterboxed;
-    letterbox(img, letterboxed, scale, tx, ty);
+    cv::Mat rgb;
+    cv::cvtColor(img, rgb, cv::COLOR_BGR2RGB);
+
+    cv::Mat model_input;
+    if (use_letterbox_) {
+        letterbox(rgb, model_input, letterbox_scale_, pad_left_, pad_top_);
+    } else {
+        cv::resize(rgb, model_input, cv::Size(net_w_, net_h_));
+    }
 
     rknn_input inputs[1];
     memset(inputs, 0, sizeof(inputs));
@@ -233,7 +296,7 @@ void RknnTest::runInferenceOnly(const cv::Mat& img) {
     inputs[0].type = RKNN_TENSOR_UINT8;
     inputs[0].size = net_w_ * net_h_ * 3;
     inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].buf = letterboxed.data;
+    inputs[0].buf = model_input.data;
 
     rknn_inputs_set(ctx_, 1, inputs);
     rknn_run(ctx_, nullptr);

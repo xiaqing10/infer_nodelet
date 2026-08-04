@@ -15,6 +15,7 @@
 #include "postprocess.h"
 
 #include <math.h>
+#include <cmath>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -257,10 +258,15 @@ static int8_t qnt_f32_to_affine(float f32, int32_t zp, float scale)
 
 static float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return ((float)qnt - (float)zp) * scale; }
 
+static float apply_activation(float x, bool use_sigmoid) {
+  return use_sigmoid ? sigmoid(x) : x;
+}
+
 static int process(int8_t *input, int *anchor, int grid_h, int grid_w, int height, int width, int stride,
                    std::vector<float> &boxes, std::vector<float> &objProbs, std::vector<int> &classId, float threshold,
-                   int32_t zp, float scale)
+                   int32_t zp, float scale, int num_classes, bool use_sigmoid)
 {
+  int box_size = 5 + num_classes;
   int validCount = 0;
   int grid_len = grid_h * grid_w;
   int8_t thres_i8 = qnt_f32_to_affine(threshold, zp, scale);
@@ -270,25 +276,27 @@ static int process(int8_t *input, int *anchor, int grid_h, int grid_w, int heigh
     {
       for (int j = 0; j < grid_w; j++)
       {
-        int8_t box_confidence = input[(PROP_BOX_SIZE * a + 4) * grid_len + i * grid_w + j];
+        int8_t box_confidence = input[(box_size * a + 4) * grid_len + i * grid_w + j];
         if (box_confidence >= thres_i8)
         {
-          int offset = (PROP_BOX_SIZE * a) * grid_len + i * grid_w + j;
+          int offset = (box_size * a) * grid_len + i * grid_w + j;
           int8_t *in_ptr = input + offset;
-          float box_x = (deqnt_affine_to_f32(*in_ptr, zp, scale)) * 2.0 - 0.5;
-          float box_y = (deqnt_affine_to_f32(in_ptr[grid_len], zp, scale)) * 2.0 - 0.5;
-          float box_w = (deqnt_affine_to_f32(in_ptr[2 * grid_len], zp, scale)) * 2.0;
-          float box_h = (deqnt_affine_to_f32(in_ptr[3 * grid_len], zp, scale)) * 2.0;
+          float box_x = apply_activation(deqnt_affine_to_f32(*in_ptr, zp, scale), use_sigmoid) * 2.0 - 0.5;
+          float box_y = apply_activation(deqnt_affine_to_f32(in_ptr[grid_len], zp, scale), use_sigmoid) * 2.0 - 0.5;
+          float box_w = apply_activation(deqnt_affine_to_f32(in_ptr[2 * grid_len], zp, scale), use_sigmoid) * 2.0;
+          float box_h = apply_activation(deqnt_affine_to_f32(in_ptr[3 * grid_len], zp, scale), use_sigmoid) * 2.0;
+          box_w = box_w * box_w;
+          box_h = box_h * box_h;
           box_x = (box_x + j) * (float)stride;
           box_y = (box_y + i) * (float)stride;
-          box_w = box_w * box_w * (float)anchor[a * 2];
-          box_h = box_h * box_h * (float)anchor[a * 2 + 1];
+          box_w = box_w * (float)anchor[a * 2];
+          box_h = box_h * (float)anchor[a * 2 + 1];
           box_x -= (box_w / 2.0);
           box_y -= (box_h / 2.0);
 
           int8_t maxClassProbs = in_ptr[5 * grid_len];
           int maxClassId = 0;
-          for (int k = 1; k < OBJ_CLASS_NUM; ++k)
+          for (int k = 1; k < num_classes; ++k)
           {
             int8_t prob = in_ptr[(5 + k) * grid_len];
             if (prob > maxClassProbs)
@@ -299,7 +307,9 @@ static int process(int8_t *input, int *anchor, int grid_h, int grid_w, int heigh
           }
           if (maxClassProbs > thres_i8)
           {
-            objProbs.push_back((deqnt_affine_to_f32(maxClassProbs, zp, scale)) * (deqnt_affine_to_f32(box_confidence, zp, scale)));
+            float obj_conf = apply_activation(deqnt_affine_to_f32(box_confidence, zp, scale), use_sigmoid);
+            float cls_conf = apply_activation(deqnt_affine_to_f32(maxClassProbs, zp, scale), use_sigmoid);
+            objProbs.push_back(cls_conf * obj_conf);
             classId.push_back(maxClassId);
             validCount++;
             boxes.push_back(box_x);
@@ -314,22 +324,11 @@ static int process(int8_t *input, int *anchor, int grid_h, int grid_w, int heigh
   return validCount;
 }
 
-int post_process(int8_t *input0, int8_t *input1, int8_t *input2, int model_in_h, int model_in_w, float conf_threshold,
+int post_process(int8_t *input0, int8_t *input1, int8_t *input2, int model_in_h, int model_in_w,
+                 int num_classes, float conf_threshold,
                  float nms_threshold, BOX_RECT pads, float scale_w, float scale_h, std::vector<int32_t> &qnt_zps,
-                 std::vector<float> &qnt_scales, detect_result_group_t *group)
+                 std::vector<float> &qnt_scales, detect_result_group_t *group, bool use_sigmoid)
 {
-  // static int init = -1;
-  // if (init == -1)
-  // {
-  //   int ret = 0;
-  //   ret = loadLabelName(LABEL_NALE_TXT_PATH, labels);
-  //   if (ret < 0)
-  //   {
-  //     return -1;
-  //   }
-
-  //   init = 0;
-  // }
   memset(group, 0, sizeof(detect_result_group_t));
 
   std::vector<float> filterBoxes;
@@ -342,7 +341,7 @@ int post_process(int8_t *input0, int8_t *input1, int8_t *input2, int model_in_h,
   int grid_w0 = model_in_w / stride0;
   int validCount0 = 0;
   validCount0 = process(input0, (int *)anchor0, grid_h0, grid_w0, model_in_h, model_in_w, stride0, filterBoxes, objProbs,
-                        classId, conf_threshold, qnt_zps[0], qnt_scales[0]);
+                        classId, conf_threshold, qnt_zps[0], qnt_scales[0], num_classes, use_sigmoid);
 
   // stride 16
   int stride1 = 16;
@@ -350,7 +349,7 @@ int post_process(int8_t *input0, int8_t *input1, int8_t *input2, int model_in_h,
   int grid_w1 = model_in_w / stride1;
   int validCount1 = 0;
   validCount1 = process(input1, (int *)anchor1, grid_h1, grid_w1, model_in_h, model_in_w, stride1, filterBoxes, objProbs,
-                        classId, conf_threshold, qnt_zps[1], qnt_scales[1]);
+                        classId, conf_threshold, qnt_zps[1], qnt_scales[1], num_classes, use_sigmoid);
 
   // stride 32
   int stride2 = 32;
@@ -358,7 +357,7 @@ int post_process(int8_t *input0, int8_t *input1, int8_t *input2, int model_in_h,
   int grid_w2 = model_in_w / stride2;
   int validCount2 = 0;
   validCount2 = process(input2, (int *)anchor2, grid_h2, grid_w2, model_in_h, model_in_w, stride2, filterBoxes, objProbs,
-                        classId, conf_threshold, qnt_zps[2], qnt_scales[2]);
+                        classId, conf_threshold, qnt_zps[2], qnt_scales[2], num_classes, use_sigmoid);
 
   int validCount = validCount0 + validCount1 + validCount2;
   // no object detect
