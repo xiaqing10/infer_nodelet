@@ -48,12 +48,14 @@ public:
     bool use_letterbox_ = false;
 
     int Init(const std::string& model_path);
+    int Init(const std::string& model_path, rknn_core_mask core_mask);
     int Detect(const cv::Mat& img, YoloV8BoxVec& boxes);
     void draw_result(cv::Mat& img, YoloV8BoxVec& result);
     ~YoloV8_det();
 
 private:
     rknn_context ctx = 0;
+    rknn_core_mask core_mask_ = RKNN_NPU_CORE_AUTO;
     rknn_input_output_num io_num;
     rknn_tensor_attr* input_attrs = nullptr;
     rknn_tensor_attr* output_attrs = nullptr;

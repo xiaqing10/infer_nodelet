@@ -34,6 +34,11 @@ float YoloV8_det::deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) {
 }
 
 int YoloV8_det::Init(const std::string& model_path) {
+    return Init(model_path, RKNN_NPU_CORE_AUTO);
+}
+
+int YoloV8_det::Init(const std::string& model_path, rknn_core_mask core_mask) {
+    core_mask_ = core_mask;
     FILE* fp = fopen(model_path.c_str(), "rb");
     if (!fp) {
         std::cerr << "Failed to open model: " << model_path << std::endl;
@@ -52,6 +57,16 @@ int YoloV8_det::Init(const std::string& model_path) {
     if (ret < 0) {
         std::cerr << "rknn_init failed: " << ret << std::endl;
         return ret;
+    }
+
+    if (core_mask_ != RKNN_NPU_CORE_AUTO) {
+        ret = rknn_set_core_mask(ctx, core_mask_);
+        if (ret < 0) {
+            std::cerr << "rknn_set_core_mask failed: " << ret << ", fallback to auto" << std::endl;
+            core_mask_ = RKNN_NPU_CORE_AUTO;
+        } else {
+            std::cout << "RKNN core mask set to: " << core_mask_ << std::endl;
+        }
     }
 
     ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));

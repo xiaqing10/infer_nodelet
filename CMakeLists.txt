@@ -10,7 +10,7 @@ set(ROS_PACKGE_SOURCE_DIR       "${CMAKE_SOURCE_DIR}")
 
 # Platform selection
 option(USE_CAMBRICON "Build with Cambricon MLU backend" OFF)
-option(USE_SOPHON "Build with Sophon TPU backend" ON)
+option(USE_SOPHON "Build with Sophon TPU backend" OFF)
 option(USE_ASCEND "Build with Ascend NPU backend" OFF)
 option(USE_NVIDIA "Build with NVIDIA TensorRT backend" OFF)
 option(USE_RKNN "Build with Rockchip RKNN backend" OFF)
@@ -236,6 +236,12 @@ if(USE_RKNN)
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
     target_link_libraries(infer_nodelet ${OPENCV_LIBS} ${RKNN_LIBS} ${SHM_LIBS} -lpthread -lavcodec -lavformat -lavutil)
+
+    add_executable(test_shm src/rknn/test_shm.cpp)
+    add_dependencies(test_shm ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(test_shm ${catkin_LIBRARIES} roscpp)
+    target_link_libraries(test_shm ${OPENCV_LIBS} -lpthread -lrt)
+    target_link_libraries(test_shm shm)
 endif()
 
 if(USE_SHM)

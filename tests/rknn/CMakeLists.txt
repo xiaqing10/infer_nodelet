@@ -17,3 +17,6 @@ target_link_libraries(rknn_test ${OpenCV_LIBS} rknn_api pthread)
 
 add_executable(rknn_benchmark benchmark.cpp rknn_test.cpp postprocess.cc preprocess.cc)
 target_link_libraries(rknn_benchmark ${OpenCV_LIBS} rknn_api pthread)
+
+add_executable(multi_instance_bench multi_instance_bench.cpp)
+target_link_libraries(multi_instance_bench ${OpenCV_LIBS} rknn_api pthread)

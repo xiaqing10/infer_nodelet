@@ -4,6 +4,10 @@
 #include "batch_pipeline_base.hpp"
 #include "detector_rknn.hpp"
 #include <memory>
+#include <atomic>
+#include <future>
+
+#define RKNN_NUM_CORES 3
 
 class RknnPipeline : public BatchPipeline {
 public:
@@ -11,12 +15,13 @@ public:
     int preprocessAndInfer(
         const std::vector<BatchFrameData>& batch_frames,
         InferResult& result) override;
-    int getBatchSize() const override { return 1; }
+    int getBatchSize() const override { return RKNN_NUM_CORES; }
 
-    YoloV8_det& getDetector() { return detector_; }
+    YoloV8_det& getDetector(int core_id) { return detectors_[core_id]; }
 
 private:
-    YoloV8_det detector_;
+    YoloV8_det detectors_[RKNN_NUM_CORES];
+    std::atomic<int> next_core_idx_{0};
 };
 
 #endif

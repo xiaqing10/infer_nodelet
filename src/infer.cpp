@@ -29,24 +29,16 @@ using namespace std;
 static void batch_preprocess_thread(int batch_size) {
     LOG_INFO("[batch_pre] thread started, batch_size=%d", batch_size);
     int num_cameras = g_cam_frame_queues.size();
-    int round_start = 0;
 
     while (ros::ok()) {
         std::vector<BatchFrameData> batch_frames;
-        std::vector<int> batch_camera_ids;
 
-        for (int i = 0; i < num_cameras && (int)batch_frames.size() < batch_size; i++) {
-            int c = (round_start + i) % num_cameras;
+        for (int i = 0; i < num_cameras; i++) {
             BatchFrameData fd;
-            if (g_cam_frame_queues[c].Consume(fd)) {
+            if (g_cam_frame_queues[i].Consume(fd)) {
                 batch_frames.push_back(std::move(fd));
-                batch_camera_ids.push_back(fd.camera_id);
             }
         }
-        if (!batch_frames.empty()) {
-            round_start = (batch_camera_ids.back() + 1) % num_cameras;
-        }
-
         if (batch_frames.empty()) {
             std::this_thread::sleep_for(std::chrono::microseconds(500));
             continue;
