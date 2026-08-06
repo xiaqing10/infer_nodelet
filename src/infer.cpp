@@ -701,7 +701,7 @@ int  InferDet::processRadarCamera(int index){
                     bfd.camera_id = camera_id_;
                     bfd.frame_width = mat.cols;
                     bfd.frame_height = mat.rows;
-                    bfd.img_time_sec = (double)(pkt->dts / 1000LL);
+                    bfd.img_time_sec = (double)(pkt->dts / 1000000LL);
                     bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
                     g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
                 }
@@ -819,6 +819,8 @@ else{
             bfd.camera_id = camera_id_;
             bfd.frame_width = mat_receive.cols;
             bfd.frame_height = mat_receive.rows;
+            bfd.img_time_sec = img_time_sec;
+            bfd.img_time_nsec = img_time_nsec;
             g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
             // 结果由 processResult 线程异步消费
             continue;
@@ -878,19 +880,19 @@ else{
 
                     lost_radar_count = 0;
 
-                    int time_diff = img_time_sec * 1000 + img_time_nsec / 1000000  - radar_time_sec * 1000 - radar_time_nsec/ 1000000;
+                    int64_t time_diff = img_time_sec * 1000 + img_time_nsec / 1000000  - radar_time_sec * 1000 - radar_time_nsec/ 1000000;
                     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
                     //  每分钟的打印下时间差
                     if (print_diff_time){
                         if(time_diff < -400 || time_diff > 400) {
-                            LOG_WARN("Diff Time: %s %s  %d img: %lf  radar: %lf ",camera_direction.c_str(), camera_type.c_str(),  time_diff, (img_time_sec * 1000 + img_time_nsec / 1000000 -ms ),(radar_time_sec * 1000 + radar_time_nsec/ 1000000 -ms ));
+                            LOG_WARN("Diff Time: %s %s  %ld img: %lf  radar: %lf ",camera_direction.c_str(), camera_type.c_str(),  time_diff, (img_time_sec * 1000 + img_time_nsec / 1000000 -ms ),(radar_time_sec * 1000 + radar_time_nsec/ 1000000 -ms ));
                             std::string code_str = "CameraRadarTimeDiff-" + camera_direction + "-" + camera_type + "-" + std::to_string(time_diff) + "ms";
                             //diagnostic.Pub//diagnosticData(ERROR_CODE_LEVEL::WARN, rvf::system::KeyCode::kCameraRadarOversize, code_str);
                             }
                         
                         else{
-                            LOG_INFO("Diff Time: %s %s  %d img: %lf  radar: %lf ",camera_direction.c_str(), camera_type.c_str(), time_diff, (img_time_sec * 1000 + img_time_nsec / 1000000 -ms ),(radar_time_sec * 1000 + radar_time_nsec/ 1000000 -ms ));
+                            LOG_INFO("Diff Time: %s %s  %ld img: %lf  radar: %lf ",camera_direction.c_str(), camera_type.c_str(), time_diff, (img_time_sec * 1000 + img_time_nsec / 1000000 -ms ),(radar_time_sec * 1000 + radar_time_nsec/ 1000000 -ms ));
                         }
                         print_diff_time = false;
                     }
@@ -1173,12 +1175,12 @@ void InferDet::processResult() {
                 radar_time_nsec = msg_track->header.stamp.nsec;
                 lost_radar_count = 0;
 
-                int time_diff = img_time_sec * 1000 + img_time_nsec / 1000000 - radar_time_sec * 1000 - radar_time_nsec / 1000000;
+                int64_t time_diff = img_time_sec * 1000 + img_time_nsec / 1000000 - radar_time_sec * 1000 - radar_time_nsec / 1000000;
                 if (print_diff_time) {
                     if (time_diff < -400 || time_diff > 400) {
-                        LOG_WARN("Diff Time: %s %s  %d", camera_direction.c_str(), camera_type.c_str(), time_diff);
+                        LOG_WARN("Diff Time: %s %s  %ld", camera_direction.c_str(), camera_type.c_str(), time_diff);
                     } else {
-                        LOG_INFO("Diff Time: %s %s  %d", camera_direction.c_str(), camera_type.c_str(), time_diff);
+                        LOG_INFO("Diff Time: %s %s  %ld", camera_direction.c_str(), camera_type.c_str(), time_diff);
                     }
                     print_diff_time = false;
                 }
@@ -1821,10 +1823,16 @@ private_nh.getParam("test/shm_name", param.shm_name);
             std::thread(batch_postprocess_thread).detach();
 #elif USE_RKNN
             // 创建全局共享的 RKNN pipeline
-            g_pipeline = std::make_unique<RknnPipeline>();
-            g_pipeline->init(model_paths[0]);
+            std::string det_model_type = "auto";
+            if (params.size() > 0 && params[0].hasMember("det_model_type")) {
+                det_model_type = std::string(params[0]["det_model_type"]);
+            }
+            auto rknn_pipeline = std::make_unique<RknnPipeline>();
+            rknn_pipeline->init(model_paths[0], det_model_type);
+            g_pipeline = std::move(rknn_pipeline);
             int batch_size = g_pipeline->getBatchSize();
-            LOG_INFO("Global RKNN pipeline initialized, batch_size=%d", batch_size);
+            LOG_INFO("Global RKNN pipeline initialized, batch_size=%d model_type=%s",
+                     batch_size, det_model_type.c_str());
 
             // 初始化结果队列（每个相机一个）
             g_result_queues.resize(infer_params.size());

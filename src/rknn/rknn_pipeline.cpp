@@ -8,7 +8,12 @@ static const rknn_core_mask kCoreMasks[RKNN_NUM_CORES] = {
 };
 
 int RknnPipeline::init(const std::string& model_path) {
+    return init(model_path, "auto");
+}
+
+int RknnPipeline::init(const std::string& model_path, const std::string& model_type) {
     for (int i = 0; i < RKNN_NUM_CORES; i++) {
+        detectors_[i].m_model_type = model_type;
         int ret = detectors_[i].Init(model_path, kCoreMasks[i]);
         if (ret != 0) {
             std::cerr << "RknnPipeline: failed to init detector on core " << i << std::endl;
@@ -16,7 +21,7 @@ int RknnPipeline::init(const std::string& model_path) {
         }
     }
     std::cout << "RknnPipeline: initialized " << RKNN_NUM_CORES
-              << " detectors on cores 0/1/2" << std::endl;
+              << " detectors on cores 0/1/2, model_type=" << model_type << std::endl;
     return 0;
 }
 
@@ -50,7 +55,7 @@ int RknnPipeline::preprocessAndInfer(
 
             for (auto& box : boxes) {
                 DetectorRetData d;
-                d.label = box.class_id;
+                d.label = box.class_id + 1;
                 d.confidence = box.score;
                 d.xmin = (int)box.x1;
                 d.ymin = (int)box.y1;

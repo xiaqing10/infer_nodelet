@@ -66,24 +66,36 @@ RknnTest::RknnTest(const std::string& model_path, int num_classes)
     net_h_ = input_attr.dims[h_idx];
     net_w_ = input_attr.dims[w_idx];
 
+    output_attrs_.resize(num_outputs_);
     for (int i = 0; i < num_outputs_; i++) {
-        rknn_tensor_attr out_attr;
-        memset(&out_attr, 0, sizeof(out_attr));
-        out_attr.index = i;
-        ret = rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &out_attr, sizeof(out_attr));
+        memset(&output_attrs_[i], 0, sizeof(rknn_tensor_attr));
+        output_attrs_[i].index = i;
+        ret = rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &output_attrs_[i], sizeof(rknn_tensor_attr));
         if (ret == 0) {
+            auto& oa = output_attrs_[i];
             std::cout << "  Output[" << i << "] dims: "
-                      << out_attr.dims[0] << "x" << out_attr.dims[1] << "x"
-                      << out_attr.dims[2] << "x" << out_attr.dims[3]
-                      << " fmt=" << (out_attr.fmt == RKNN_TENSOR_NCHW ? "NCHW" : "NHWC")
+                      << oa.dims[0] << "x" << oa.dims[1] << "x"
+                      << oa.dims[2] << "x" << oa.dims[3]
+                      << " fmt=" << (oa.fmt == RKNN_TENSOR_NCHW ? "NCHW" : "NHWC")
+                      << " type=" << (oa.type == RKNN_TENSOR_INT8 ? "INT8" : "FP32")
+                      << " qnt=" << (oa.qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC ? "AFFINE" : "NONE")
+                      << " zp=" << oa.zp << " scale=" << oa.scale
                       << std::endl;
             if (i == 0) {
-                int cls_from_model = out_attr.dims[1] - 5;
-                if (cls_from_model > 0 && cls_from_model < 100) {
-                    num_classes_ = cls_from_model;
+                if (oa.qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC && oa.type == RKNN_TENSOR_INT8) {
+                    is_quant_ = true;
+                }
+                if (num_outputs_ >= 3) {
+                    int cls_from_model = output_attrs_[1].dims[1];
+                    if (cls_from_model > 0 && cls_from_model < 100) {
+                        num_classes_ = cls_from_model;
+                    }
                 }
             }
         }
+    }
+    if (num_outputs_ >= 3) {
+        output_per_branch_ = num_outputs_ / 3;
     }
 
     std::cout << "Input dims: " << input_attr.dims[0] << "x" << input_attr.dims[1] << "x"
@@ -193,7 +205,7 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
     std::vector<rknn_output> outputs(num_outputs_);
     memset(outputs.data(), 0, sizeof(rknn_output) * num_outputs_);
     for (int i = 0; i < num_outputs_; i++) {
-        outputs[i].want_float = 0;
+        outputs[i].want_float = is_quant_ ? 0 : 1;
         outputs[i].is_prealloc = 0;
     }
 
@@ -254,22 +266,41 @@ std::vector<RknnDetection> RknnTest::runInference(const cv::Mat& img) {
             detections.push_back(d);
         }
     } else {
-        float* data = (float*)outputs[0].buf;
-        rknn_tensor_attr out_attr;
-        memset(&out_attr, 0, sizeof(out_attr));
-        out_attr.index = 0;
-        rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &out_attr, sizeof(out_attr));
-        int box_num = out_attr.dims[2];
-        int nout = out_attr.dims[1];
-        // No padding: scale = 1.0, tx = ty = 0
-        detections = decodeYoloV8(data, box_num, nout, 1.0f, 0, 0, img.cols, img.rows);
-        float inv_scale_w = (float)img.cols / net_w_;
-        float inv_scale_h = (float)img.rows / net_h_;
-        for (auto& d : detections) {
-            d.box.x = (int)(d.box.x * inv_scale_w);
-            d.box.y = (int)(d.box.y * inv_scale_h);
-            d.box.width = (int)(d.box.width * inv_scale_w);
-            d.box.height = (int)(d.box.height * inv_scale_h);
+        if (num_outputs_ >= 3) {
+            detections = decodeYoloV8DFL(outputs.data(), scale_x, scale_y, img.cols, img.rows);
+        } else {
+            rknn_tensor_attr out_attr;
+            memset(&out_attr, 0, sizeof(out_attr));
+            out_attr.index = 0;
+            rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &out_attr, sizeof(out_attr));
+            int box_num = out_attr.dims[2];
+            int nout = out_attr.dims[1];
+            int nc = nout - 4;
+            if (nc > 0 && nc < 100) num_classes_ = nc;
+
+            bool is_quant = (out_attr.type == RKNN_TENSOR_INT8);
+
+            std::vector<float> dequant_buf;
+            if (is_quant) {
+                dequant_buf.resize(box_num * nout);
+                int8_t* i8_data = (int8_t*)outputs[0].buf;
+                float scale = out_attr.scale;
+                int32_t zp = out_attr.zp;
+                for (int i = 0; i < box_num * nout; i++) {
+                    dequant_buf[i] = ((float)i8_data[i] - (float)zp) * scale;
+                }
+            }
+            const float* data = is_quant ? dequant_buf.data() : (float*)outputs[0].buf;
+
+            detections = decodeYoloV8Merged(data, box_num, nout, 1.0f, 0, 0, img.cols, img.rows);
+            float inv_scale_w = (float)img.cols / net_w_;
+            float inv_scale_h = (float)img.rows / net_h_;
+            for (auto& d : detections) {
+                d.box.x = (int)(d.box.x * inv_scale_w);
+                d.box.y = (int)(d.box.y * inv_scale_h);
+                d.box.width = (int)(d.box.width * inv_scale_w);
+                d.box.height = (int)(d.box.height * inv_scale_h);
+            }
         }
     }
 
@@ -311,23 +342,30 @@ void RknnTest::runInferenceOnly(const cv::Mat& img) {
     rknn_outputs_release(ctx_, num_outputs_, outputs.data());
 }
 
-std::vector<RknnDetection> RknnTest::decodeYoloV8(
+std::vector<RknnDetection> RknnTest::decodeYoloV8Merged(
     const float* data, int box_num, int nout,
     float scale, int tx, int ty, int img_w, int img_h) {
     std::vector<RknnDetection> raw_dets;
+    int nc = nout - 4;
+    int grids = box_num;
+    int stride = 640 / (int)std::sqrt(grids);
+    int grid_h = (int)std::sqrt(grids);
+    int grid_w = grid_h;
+
     for (int i = 0; i < box_num; i++) {
         const float* ptr = data + i * nout;
+        float cx = (sigmoid(ptr[0]) * 2.0f - 0.5f + (i % grid_w)) * stride;
+        float cy = (sigmoid(ptr[1]) * 2.0f - 0.5f + (i / grid_w)) * stride;
+        float w = std::pow(sigmoid(ptr[2]) * 2.0f, 2) * stride;
+        float h = std::pow(sigmoid(ptr[3]) * 2.0f, 2) * stride;
+
         const float* cls_conf = ptr + 4;
-        for (int j = 0; j < num_classes_; j++) {
+        for (int j = 0; j < nc; j++) {
             float score = sigmoid(cls_conf[j]);
             if (score > conf_threshold_) {
                 RknnDetection d;
                 d.class_id = j;
                 d.confidence = score;
-                float cx = ptr[0];
-                float cy = ptr[1];
-                float w = ptr[2];
-                float h = ptr[3];
                 d.box = cv::Rect(
                     (int)(cx - w / 2),
                     (int)(cy - h / 2),
@@ -358,6 +396,280 @@ std::vector<RknnDetection> RknnTest::decodeYoloV8(
     }
 
     return raw_dets;
+}
+
+static inline int32_t clip_f(float val, float min, float max) {
+    float f = val <= min ? min : (val >= max ? max : val);
+    return (int32_t)f;
+}
+
+static void compute_dfl(const float* tensor, int dfl_len, float* box) {
+    for (int b = 0; b < 4; b++) {
+        float exp_t[16];
+        float exp_sum = 0;
+        float acc_sum = 0;
+        for (int i = 0; i < dfl_len; i++) {
+            exp_t[i] = std::exp(tensor[i + b * dfl_len]);
+            exp_sum += exp_t[i];
+        }
+        for (int i = 0; i < dfl_len; i++) {
+            acc_sum += exp_t[i] / exp_sum * i;
+        }
+        box[b] = acc_sum;
+    }
+}
+
+static int process_yolov8_branch_i8(
+    int8_t* box_tensor, int32_t box_zp, float box_scale,
+    int8_t* score_tensor, int32_t score_zp, float score_scale,
+    int8_t* score_sum_tensor, int32_t score_sum_zp, float score_sum_scale,
+    int grid_h, int grid_w, int stride, int dfl_len, int num_classes,
+    float threshold,
+    std::vector<float>& boxes, std::vector<float>& objProbs, std::vector<int>& classId) {
+
+    int validCount = 0;
+    int grid_len = grid_h * grid_w;
+    int8_t score_thres = (int8_t)(clip_f(threshold / score_scale + score_zp, -128, 127));
+    int8_t score_sum_thres = (int8_t)(clip_f(threshold / score_sum_scale + score_sum_zp, -128, 127));
+
+    for (int i = 0; i < grid_h; i++) {
+        for (int j = 0; j < grid_w; j++) {
+            int offset = i * grid_w + j;
+            int max_class_id = -1;
+
+            if (score_sum_tensor != nullptr) {
+                if (score_sum_tensor[offset] < score_sum_thres) continue;
+            }
+
+            int8_t max_score = -score_zp;
+            for (int c = 0; c < num_classes; c++) {
+                int idx = offset + c * grid_len;
+                if (score_tensor[idx] > score_thres && score_tensor[idx] > max_score) {
+                    max_score = score_tensor[idx];
+                    max_class_id = c;
+                }
+            }
+
+            if (max_score > score_thres) {
+                int box_offset = offset;
+                float dfl_input[4 * 16];
+                for (int k = 0; k < dfl_len * 4; k++) {
+                    dfl_input[k] = ((float)box_tensor[box_offset] - (float)box_zp) * box_scale;
+                    box_offset += grid_len;
+                }
+                float box[4];
+                compute_dfl(dfl_input, dfl_len, box);
+
+                float x1 = (-box[0] + j + 0.5f) * stride;
+                float y1 = (-box[1] + i + 0.5f) * stride;
+                float x2 = (box[2] + j + 0.5f) * stride;
+                float y2 = (box[3] + i + 0.5f) * stride;
+                boxes.push_back(x1);
+                boxes.push_back(y1);
+                boxes.push_back(x2 - x1);
+                boxes.push_back(y2 - y1);
+
+                objProbs.push_back(((float)max_score - (float)score_zp) * score_scale);
+                classId.push_back(max_class_id);
+                validCount++;
+            }
+        }
+    }
+    return validCount;
+}
+
+static int process_yolov8_branch_fp32(
+    float* box_tensor, float* score_tensor, float* score_sum_tensor,
+    int grid_h, int grid_w, int stride, int dfl_len, int num_classes,
+    float threshold,
+    std::vector<float>& boxes, std::vector<float>& objProbs, std::vector<int>& classId) {
+
+    int validCount = 0;
+    int grid_len = grid_h * grid_w;
+
+    for (int i = 0; i < grid_h; i++) {
+        for (int j = 0; j < grid_w; j++) {
+            int offset = i * grid_w + j;
+            int max_class_id = -1;
+
+            if (score_sum_tensor != nullptr) {
+                if (score_sum_tensor[offset] < threshold) continue;
+            }
+
+            float max_score = 0;
+            for (int c = 0; c < num_classes; c++) {
+                int idx = offset + c * grid_len;
+                if (score_tensor[idx] > threshold && score_tensor[idx] > max_score) {
+                    max_score = score_tensor[idx];
+                    max_class_id = c;
+                }
+            }
+
+            if (max_score > threshold) {
+                int box_offset = offset;
+                float dfl_input[4 * 16];
+                for (int k = 0; k < dfl_len * 4; k++) {
+                    dfl_input[k] = box_tensor[box_offset];
+                    box_offset += grid_len;
+                }
+                float box[4];
+                compute_dfl(dfl_input, dfl_len, box);
+
+                float x1 = (-box[0] + j + 0.5f) * stride;
+                float y1 = (-box[1] + i + 0.5f) * stride;
+                float x2 = (box[2] + j + 0.5f) * stride;
+                float y2 = (box[3] + i + 0.5f) * stride;
+                boxes.push_back(x1);
+                boxes.push_back(y1);
+                boxes.push_back(x2 - x1);
+                boxes.push_back(y2 - y1);
+
+                objProbs.push_back(max_score);
+                classId.push_back(max_class_id);
+                validCount++;
+            }
+        }
+    }
+    return validCount;
+}
+
+std::vector<RknnDetection> RknnTest::decodeYoloV8DFL(
+    rknn_output* outputs, float scale_x, float scale_y, int img_w, int img_h) {
+
+    std::vector<RknnDetection> detections;
+    std::vector<float> filterBoxes;
+    std::vector<float> objProbs;
+    std::vector<int> classId;
+    int validCount = 0;
+
+    int dfl_len = output_attrs_[0].dims[1] / 4;
+
+    for (int i = 0; i < 3; i++) {
+        int box_idx = i * output_per_branch_;
+        int score_idx = i * output_per_branch_ + 1;
+
+        void* score_sum = nullptr;
+        int32_t score_sum_zp = 0;
+        float score_sum_scale = 1.0f;
+        if (output_per_branch_ == 3) {
+            int sum_idx = i * output_per_branch_ + 2;
+            score_sum = outputs[sum_idx].buf;
+            score_sum_zp = output_attrs_[sum_idx].zp;
+            score_sum_scale = output_attrs_[sum_idx].scale;
+        }
+
+        int grid_h = output_attrs_[box_idx].dims[2];
+        int grid_w = output_attrs_[box_idx].dims[3];
+        int stride = net_h_ / grid_h;
+
+        if (is_quant_) {
+            validCount += process_yolov8_branch_i8(
+                (int8_t*)outputs[box_idx].buf,
+                output_attrs_[box_idx].zp, output_attrs_[box_idx].scale,
+                (int8_t*)outputs[score_idx].buf,
+                output_attrs_[score_idx].zp, output_attrs_[score_idx].scale,
+                (int8_t*)score_sum, score_sum_zp, score_sum_scale,
+                grid_h, grid_w, stride, dfl_len, num_classes_,
+                conf_threshold_,
+                filterBoxes, objProbs, classId);
+        } else {
+            validCount += process_yolov8_branch_fp32(
+                (float*)outputs[box_idx].buf,
+                (float*)outputs[score_idx].buf,
+                (float*)score_sum,
+                grid_h, grid_w, stride, dfl_len, num_classes_,
+                conf_threshold_,
+                filterBoxes, objProbs, classId);
+        }
+    }
+
+    if (validCount <= 0) return detections;
+
+    std::vector<int> indexArray(validCount);
+    for (int i = 0; i < validCount; i++) indexArray[i] = i;
+
+    // Sort by confidence descending
+    for (int i = 0; i < validCount; i++) {
+        for (int j = i + 1; j < validCount; j++) {
+            if (objProbs[indexArray[i]] < objProbs[indexArray[j]]) {
+                std::swap(indexArray[i], indexArray[j]);
+            }
+        }
+    }
+
+    // Per-class NMS
+    for (int i = 0; i < validCount; i++) {
+        int n = indexArray[i];
+        if (n == -1) continue;
+        for (int j = i + 1; j < validCount; j++) {
+            int m = indexArray[j];
+            if (m == -1) continue;
+            if (classId[n] != classId[m]) continue;
+
+            float xmin0 = filterBoxes[n * 4 + 0];
+            float ymin0 = filterBoxes[n * 4 + 1];
+            float xmax0 = xmin0 + filterBoxes[n * 4 + 2];
+            float ymax0 = ymin0 + filterBoxes[n * 4 + 3];
+            float xmin1 = filterBoxes[m * 4 + 0];
+            float ymin1 = filterBoxes[m * 4 + 1];
+            float xmax1 = xmin1 + filterBoxes[m * 4 + 2];
+            float ymax1 = ymin1 + filterBoxes[m * 4 + 3];
+
+            float w = std::max(0.0f, std::min(xmax0, xmax1) - std::max(xmin0, xmin1));
+            float h = std::max(0.0f, std::min(ymax0, ymax1) - std::max(ymin0, ymin1));
+            float iou = w * h / ((xmax0 - xmin0) * (ymax0 - ymin0) + (xmax1 - xmin1) * (ymax1 - ymin1) - w * h);
+
+            if (iou > nms_threshold_) {
+                indexArray[j] = -1;
+            }
+        }
+    }
+
+    // Letterbox: get pad from letterbox_scale_ and pad_left_/pad_top_
+    float lx = (float)pad_left_;
+    float ly = (float)pad_top_;
+    float ls = letterbox_scale_;
+
+    if (!use_letterbox_) {
+        lx = 0;
+        ly = 0;
+        ls = 1.0f;
+    }
+
+    for (int i = 0; i < validCount && (int)detections.size() < max_det_; i++) {
+        int n = indexArray[i];
+        if (n == -1) continue;
+
+        float x1 = filterBoxes[n * 4 + 0];
+        float y1 = filterBoxes[n * 4 + 1];
+        float w = filterBoxes[n * 4 + 2];
+        float h = filterBoxes[n * 4 + 3];
+
+        if (use_letterbox_) {
+            x1 = (x1 - lx) / ls;
+            y1 = (y1 - ly) / ls;
+            w = w / ls;
+            h = h / ls;
+        } else {
+            x1 = x1 * scale_x;
+            y1 = y1 * scale_y;
+            w = w * scale_x;
+            h = h * scale_y;
+        }
+
+        x1 = clip_f(x1, 0, img_w);
+        y1 = clip_f(y1, 0, img_h);
+        w = clip_f(w, 1, img_w - (int)x1);
+        h = clip_f(h, 1, img_h - (int)y1);
+
+        RknnDetection d;
+        d.class_id = classId[n];
+        d.confidence = objProbs[n];
+        d.box = cv::Rect((int)x1, (int)y1, (int)w, (int)h);
+        detections.push_back(d);
+    }
+
+    return detections;
 }
 
 void RknnTest::nms(std::vector<RknnDetection>& dets, float nmsConfidence) {

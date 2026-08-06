@@ -104,18 +104,47 @@ int YoloV8_det::Init(const std::string& model_path, rknn_core_mask core_mask) {
     m_net_h = input_attrs[0].dims[h_idx];
     m_net_w = input_attrs[0].dims[w_idx];
 
-    // Auto-detect num_classes from first output: dims[1] = 3 * (5 + num_classes)
+    // Detect quantization
     if (io_num.n_output > 0) {
-        int channels = output_attrs[0].dims[1];
-        int cls = channels / 3 - 5;
-        if (cls > 0 && cls < 100) {
-            m_class_num = cls;
+        if (output_attrs[0].qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC &&
+            output_attrs[0].type == RKNN_TENSOR_INT8) {
+            is_quant_ = true;
         }
     }
 
-    std::cout << "RKNN YOLOv5 model loaded: size=" << m_net_w << "x" << m_net_h
+    // Auto-detect model type and num_classes
+    if (m_model_type == "auto") {
+        if (io_num.n_output >= 3) {
+            m_model_type = "v5";
+        } else {
+            m_model_type = "v8";
+        }
+    }
+
+    if (m_model_type == "v5") {
+        if (io_num.n_output > 0) {
+            int channels = output_attrs[0].dims[1];
+            int cls = channels / 3 - 5;
+            if (cls > 0 && cls < 100) {
+                m_class_num = cls;
+            }
+        }
+    } else {
+        // v8: classes from score branch (output_attrs[1])
+        if (io_num.n_output >= 3) {
+            output_per_branch_ = io_num.n_output / 3;
+            m_class_num = output_attrs[1].dims[1];
+        } else {
+            // Single merged output: infer from dims[1] - 4
+            m_class_num = output_attrs[0].dims[1] - 4;
+        }
+    }
+
+    std::cout << "RKNN model loaded: type=" << m_model_type
+              << " size=" << m_net_w << "x" << m_net_h
               << " classes=" << m_class_num
               << " outputs=" << io_num.n_output
+              << " quant=" << (is_quant_ ? "INT8" : "FP32")
               << " fmt=" << (input_attrs[0].fmt == RKNN_TENSOR_NCHW ? "NCHW" : "NHWC")
               << std::endl;
 
@@ -329,6 +358,7 @@ int YoloV8_det::post_process(int8_t* input0, int8_t* input1, int8_t* input2,
 }
 
 int YoloV8_det::Detect(const cv::Mat& img, YoloV8BoxVec& boxes) {
+    std::lock_guard<std::mutex> lock(detect_mutex_);
     if (!ctx || img.empty()) return -1;
 
     cv::Mat rgb;
@@ -374,7 +404,7 @@ int YoloV8_det::Detect(const cv::Mat& img, YoloV8BoxVec& boxes) {
     rknn_output outputs[io_num.n_output];
     memset(outputs, 0, sizeof(outputs));
     for (uint32_t i = 0; i < io_num.n_output; i++) {
-        outputs[i].want_float = 0;
+        outputs[i].want_float = is_quant_ ? 0 : 1;
         outputs[i].is_prealloc = 0;
     }
     ret = rknn_outputs_get(ctx, io_num.n_output, outputs, NULL);
@@ -383,54 +413,59 @@ int YoloV8_det::Detect(const cv::Mat& img, YoloV8BoxVec& boxes) {
         return ret;
     }
 
-    std::vector<float> out_scales(io_num.n_output);
-    std::vector<int32_t> out_zps(io_num.n_output);
-    for (uint32_t i = 0; i < io_num.n_output; i++) {
-        out_scales[i] = output_attrs[i].scale;
-        out_zps[i] = output_attrs[i].zp;
-    }
-
-    int num_classes = m_class_num;
-    // Re-derive num_classes from output channels
-    {
-        int channels = output_attrs[0].dims[1];
-        int cls = channels / 3 - 5;
-        if (cls > 0 && cls < 100) num_classes = cls;
-    }
-
-    BOX_RECT pads;
-    memset(&pads, 0, sizeof(pads));
-
-    float scale_w = 1.0f;
-    float scale_h = 1.0f;
-
-    if (use_letterbox_) {
-        pads.left = pad_left_;
-        pads.top = pad_top_;
-        pads.right = pad_left_;
-        pads.bottom = pad_top_;
-        scale_w = 1.0f / letterbox_scale_;
-        scale_h = 1.0f / letterbox_scale_;
-    }
-
-    detect_result_group_t detect_result_group;
-    post_process((int8_t*)outputs[0].buf, (int8_t*)outputs[1].buf, (int8_t*)outputs[2].buf,
-                 m_net_h, m_net_w, num_classes,
-                 m_confThreshold, m_nmsThreshold,
-                 pads, scale_w, scale_h,
-                 out_zps, out_scales, &detect_result_group, use_sigmoid_);
-
     boxes.clear();
-    for (int i = 0; i < detect_result_group.count; i++) {
-        detect_result_t* det = &detect_result_group.results[i];
-        YoloV8Box box;
-        box.class_id = det->class_id;
-        box.score = det->prop;
-        box.x1 = (float)det->box.left * scale_x;
-        box.y1 = (float)det->box.top * scale_y;
-        box.x2 = (float)det->box.right * scale_x;
-        box.y2 = (float)det->box.bottom * scale_y;
-        boxes.push_back(box);
+
+    if (m_model_type == "v5") {
+        std::vector<float> out_scales(io_num.n_output);
+        std::vector<int32_t> out_zps(io_num.n_output);
+        for (uint32_t i = 0; i < io_num.n_output; i++) {
+            out_scales[i] = output_attrs[i].scale;
+            out_zps[i] = output_attrs[i].zp;
+        }
+
+        int num_classes = m_class_num;
+        {
+            int channels = output_attrs[0].dims[1];
+            int cls = channels / 3 - 5;
+            if (cls > 0 && cls < 100) num_classes = cls;
+        }
+
+        BOX_RECT pads;
+        memset(&pads, 0, sizeof(pads));
+
+        float scale_w = 1.0f;
+        float scale_h = 1.0f;
+
+        if (use_letterbox_) {
+            pads.left = pad_left_;
+            pads.top = pad_top_;
+            pads.right = pad_left_;
+            pads.bottom = pad_top_;
+            scale_w = 1.0f / letterbox_scale_;
+            scale_h = 1.0f / letterbox_scale_;
+        }
+
+        detect_result_group_t detect_result_group;
+        post_process((int8_t*)outputs[0].buf, (int8_t*)outputs[1].buf, (int8_t*)outputs[2].buf,
+                     m_net_h, m_net_w, num_classes,
+                     m_confThreshold, m_nmsThreshold,
+                     pads, scale_w, scale_h,
+                     out_zps, out_scales, &detect_result_group, use_sigmoid_);
+
+        for (int i = 0; i < detect_result_group.count; i++) {
+            detect_result_t* det = &detect_result_group.results[i];
+            YoloV8Box box;
+            box.class_id = det->class_id;
+            box.score = det->prop;
+            box.x1 = (float)det->box.left * scale_x;
+            box.y1 = (float)det->box.top * scale_y;
+            box.x2 = (float)det->box.right * scale_x;
+            box.y2 = (float)det->box.bottom * scale_y;
+            boxes.push_back(box);
+        }
+    } else {
+        // YOLOv8 DFL postprocess
+        post_process_yolov8(outputs, img.cols, img.rows, scale_x, scale_y, boxes);
     }
 
     if ((int)boxes.size() > max_det) {
@@ -498,6 +533,199 @@ void YoloV8_det::draw_result(cv::Mat& img, YoloV8BoxVec& result) {
         cv::putText(img, label, cv::Point((int)box.x1, (int)box.y1),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 2);
     }
+}
+
+// ==================== YOLOv8 DFL postprocess ====================
+
+void YoloV8_det::compute_dfl(const float* tensor, int dfl_len, float* box) {
+    for (int b = 0; b < 4; b++) {
+        float exp_t[16];
+        float exp_sum = 0;
+        float acc_sum = 0;
+        for (int i = 0; i < dfl_len; i++) {
+            exp_t[i] = std::exp(tensor[i + b * dfl_len]);
+            exp_sum += exp_t[i];
+        }
+        for (int i = 0; i < dfl_len; i++) {
+            acc_sum += exp_t[i] / exp_sum * i;
+        }
+        box[b] = acc_sum;
+    }
+}
+
+int YoloV8_det::process_yolov8_branch(
+    int8_t* box_tensor, int32_t box_zp, float box_scale,
+    int8_t* score_tensor, int32_t score_zp, float score_scale,
+    int8_t* score_sum_tensor, int32_t score_sum_zp, float score_sum_scale,
+    int grid_h, int grid_w, int stride, int dfl_len,
+    std::vector<float>& boxes, std::vector<float>& objProbs,
+    std::vector<int>& classId, float threshold) {
+
+    int validCount = 0;
+    int grid_len = grid_h * grid_w;
+    int8_t score_thres = (int8_t)__clip(threshold / score_scale + score_zp, -128, 127);
+    int8_t score_sum_thres = (int8_t)__clip(threshold / score_sum_scale + score_sum_zp, -128, 127);
+
+    for (int i = 0; i < grid_h; i++) {
+        for (int j = 0; j < grid_w; j++) {
+            int offset = i * grid_w + j;
+            int max_class_id = -1;
+
+            if (score_sum_tensor != nullptr) {
+                if (score_sum_tensor[offset] < score_sum_thres) continue;
+            }
+
+            int8_t max_score = -score_zp;
+            for (int c = 0; c < m_class_num; c++) {
+                int idx = offset + c * grid_len;
+                if (score_tensor[idx] > score_thres && score_tensor[idx] > max_score) {
+                    max_score = score_tensor[idx];
+                    max_class_id = c;
+                }
+            }
+
+            if (max_score > score_thres) {
+                int box_offset = offset;
+                float dfl_input[4 * 16];
+                for (int k = 0; k < dfl_len * 4; k++) {
+                    dfl_input[k] = ((float)box_tensor[box_offset] - (float)box_zp) * box_scale;
+                    box_offset += grid_len;
+                }
+                float box[4];
+                compute_dfl(dfl_input, dfl_len, box);
+
+                float x1 = (-box[0] + j + 0.5f) * stride;
+                float y1 = (-box[1] + i + 0.5f) * stride;
+                float x2 = (box[2] + j + 0.5f) * stride;
+                float y2 = (box[3] + i + 0.5f) * stride;
+                boxes.push_back(x1);
+                boxes.push_back(y1);
+                boxes.push_back(x2 - x1);
+                boxes.push_back(y2 - y1);
+
+                objProbs.push_back(((float)max_score - (float)score_zp) * score_scale);
+                classId.push_back(max_class_id);
+                validCount++;
+            }
+        }
+    }
+    return validCount;
+}
+
+int YoloV8_det::post_process_yolov8(
+    rknn_output* outputs, int img_w, int img_h,
+    float scale_x, float scale_y, YoloV8BoxVec& boxes) {
+
+    std::vector<float> filterBoxes;
+    std::vector<float> objProbs;
+    std::vector<int> classId;
+    int validCount = 0;
+
+    int dfl_len = output_attrs[0].dims[1] / 4;
+
+    for (int i = 0; i < 3; i++) {
+        int box_idx = i * output_per_branch_;
+        int score_idx = i * output_per_branch_ + 1;
+
+        int8_t* score_sum = nullptr;
+        int32_t score_sum_zp = 0;
+        float score_sum_scale = 1.0f;
+        if (output_per_branch_ == 3) {
+            int sum_idx = i * output_per_branch_ + 2;
+            score_sum = (int8_t*)outputs[sum_idx].buf;
+            score_sum_zp = output_attrs[sum_idx].zp;
+            score_sum_scale = output_attrs[sum_idx].scale;
+        }
+
+        int grid_h = output_attrs[box_idx].dims[2];
+        int grid_w = output_attrs[box_idx].dims[3];
+        int stride = m_net_h / grid_h;
+
+        validCount += process_yolov8_branch(
+            (int8_t*)outputs[box_idx].buf,
+            output_attrs[box_idx].zp, output_attrs[box_idx].scale,
+            (int8_t*)outputs[score_idx].buf,
+            output_attrs[score_idx].zp, output_attrs[score_idx].scale,
+            score_sum, score_sum_zp, score_sum_scale,
+            grid_h, grid_w, stride, dfl_len,
+            filterBoxes, objProbs, classId, m_confThreshold);
+    }
+
+    if (validCount <= 0) return 0;
+
+    std::vector<int> indexArray(validCount);
+    for (int i = 0; i < validCount; i++) indexArray[i] = i;
+
+    // Sort descending
+    for (int i = 0; i < validCount; i++) {
+        for (int j = i + 1; j < validCount; j++) {
+            if (objProbs[indexArray[i]] < objProbs[indexArray[j]]) {
+                std::swap(indexArray[i], indexArray[j]);
+            }
+        }
+    }
+
+    // Per-class NMS
+    for (int i = 0; i < validCount; i++) {
+        int n = indexArray[i];
+        if (n == -1) continue;
+        for (int j = i + 1; j < validCount; j++) {
+            int m = indexArray[j];
+            if (m == -1) continue;
+            if (classId[n] != classId[m]) continue;
+
+            float xmin0 = filterBoxes[n * 4 + 0];
+            float ymin0 = filterBoxes[n * 4 + 1];
+            float xmax0 = xmin0 + filterBoxes[n * 4 + 2];
+            float ymax0 = ymin0 + filterBoxes[n * 4 + 3];
+            float xmin1 = filterBoxes[m * 4 + 0];
+            float ymin1 = filterBoxes[m * 4 + 1];
+            float xmax1 = xmin1 + filterBoxes[m * 4 + 2];
+            float ymax1 = ymin1 + filterBoxes[m * 4 + 3];
+
+            float w = std::max(0.0f, std::min(xmax0, xmax1) - std::max(xmin0, xmin1));
+            float h = std::max(0.0f, std::min(ymax0, ymax1) - std::max(ymin0, ymin1));
+            float iou = w * h / ((xmax0 - xmin0) * (ymax0 - ymin0) + (xmax1 - xmin1) * (ymax1 - ymin1) - w * h);
+
+            if (iou > m_nmsThreshold) {
+                indexArray[j] = -1;
+            }
+        }
+    }
+
+    // Map coordinates back to original image
+    for (int i = 0; i < validCount && (int)boxes.size() < max_det; i++) {
+        int n = indexArray[i];
+        if (n == -1) continue;
+
+        float x1 = filterBoxes[n * 4 + 0];
+        float y1 = filterBoxes[n * 4 + 1];
+        float w = filterBoxes[n * 4 + 2];
+        float h = filterBoxes[n * 4 + 3];
+
+        if (use_letterbox_) {
+            x1 = (x1 - pad_left_) / letterbox_scale_;
+            y1 = (y1 - pad_top_) / letterbox_scale_;
+            w = w / letterbox_scale_;
+            h = h / letterbox_scale_;
+        } else {
+            x1 = x1 * scale_x;
+            y1 = y1 * scale_y;
+            w = w * scale_x;
+            h = h * scale_y;
+        }
+
+        YoloV8Box box;
+        box.class_id = classId[n];
+        box.score = objProbs[n];
+        box.x1 = std::max(0.0f, std::min(x1, (float)img_w));
+        box.y1 = std::max(0.0f, std::min(y1, (float)img_h));
+        box.x2 = std::max(0.0f, std::min(x1 + w, (float)img_w));
+        box.y2 = std::max(0.0f, std::min(y1 + h, (float)img_h));
+        boxes.push_back(box);
+    }
+
+    return 0;
 }
 
 YoloV8_det::~YoloV8_det() {

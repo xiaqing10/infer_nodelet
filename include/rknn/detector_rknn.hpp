@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <mutex>
 #include "opencv2/opencv.hpp"
 #include "rknn_api.h"
 
@@ -46,6 +47,7 @@ public:
     int m_class_num = 10;
     bool use_sigmoid_ = false;
     bool use_letterbox_ = false;
+    std::string m_model_type = "v5";  // "v5" or "v8"
 
     int Init(const std::string& model_path);
     int Init(const std::string& model_path, rknn_core_mask core_mask);
@@ -61,6 +63,9 @@ private:
     rknn_tensor_attr* output_attrs = nullptr;
     int max_det = 300;
     int num_outputs_ = 1;
+    int output_per_branch_ = 0;
+    bool is_quant_ = false;
+    std::mutex detect_mutex_;
 
     int pad_left_ = 0;
     int pad_top_ = 0;
@@ -92,6 +97,18 @@ private:
                      BOX_RECT pads, float scale_w, float scale_h,
                      std::vector<int32_t>& qnt_zps, std::vector<float>& qnt_scales,
                      detect_result_group_t* group, bool use_sigmoid);
+
+    // YOLOv8 DFL postprocess
+    static void compute_dfl(const float* tensor, int dfl_len, float* box);
+    int process_yolov8_branch(int8_t* box_tensor, int32_t box_zp, float box_scale,
+                              int8_t* score_tensor, int32_t score_zp, float score_scale,
+                              int8_t* score_sum_tensor, int32_t score_sum_zp, float score_sum_scale,
+                              int grid_h, int grid_w, int stride, int dfl_len,
+                              std::vector<float>& boxes, std::vector<float>& objProbs,
+                              std::vector<int>& classId, float threshold);
+    int post_process_yolov8(rknn_output* outputs, int img_w, int img_h,
+                            float scale_x, float scale_y,
+                            YoloV8BoxVec& boxes);
 };
 
 #endif

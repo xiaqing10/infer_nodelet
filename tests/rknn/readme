@@ -1,0 +1,2 @@
+1, 使用ultralytics_yolov8 导出分离式的onnx
+2，使用rknn_model_zoo导出合适的rknn模型。  唯一的区别其实就是pt到onnx的导出是分离式，Detect无法直接使用。

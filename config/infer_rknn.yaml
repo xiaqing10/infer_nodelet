@@ -1,6 +1,7 @@
 # Set up your params
-use_shm: true
-det_engine_name: /home/files/rvf/share/infer_nodelet/model/best.rknn
+use_shm: false
+#det_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/best.rknn
+det_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/best_ultralytics_yolov8_pt.rknn
 color_engine_name: /home/files/rvf/share/infer_nodelet/model/resnet18.rknn
 abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/cons_spill_all.rknn
 vechile_color_rate: 1500
@@ -17,7 +18,7 @@ traffic_analyzer:
   stationary_threshold: 0.005
   abnormal_speed_std_threshold: 3.0
 model:
-  - {det_class: 10, det_stride: 3, abandon_class: 3, abandon_stride: 3}
+  - {det_model_type: "v8", det_class: 10, det_stride: 3, abandon_class: 3, abandon_stride: 3}
 test:
   test_flag: false
   camera_type: short

@@ -12,6 +12,7 @@
 class RknnPipeline : public BatchPipeline {
 public:
     int init(const std::string& model_path) override;
+    int init(const std::string& model_path, const std::string& model_type);
     int preprocessAndInfer(
         const std::vector<BatchFrameData>& batch_frames,
         InferResult& result) override;

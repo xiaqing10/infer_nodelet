@@ -43,13 +43,19 @@ private:
     int pad_top_ = 0;
     float letterbox_scale_ = 1.0f;
     rknn_core_mask core_mask_ = RKNN_NPU_CORE_AUTO;
+    bool is_quant_ = false;
+    int output_per_branch_ = 0;
+    std::vector<rknn_tensor_attr> output_attrs_;
 
     void letterbox(const cv::Mat& img, cv::Mat& out, float& scale, int& tx, int& ty);
     void nms(std::vector<RknnDetection>& dets, float nmsConfidence);
     static float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 
-    std::vector<RknnDetection> decodeYoloV8(const float* data, int box_num, int nout,
-                                             float scale, int tx, int ty, int img_w, int img_h);
+    std::vector<RknnDetection> decodeYoloV8Merged(const float* data, int box_num, int nout,
+                                                   float scale, int tx, int ty, int img_w, int img_h);
+    std::vector<RknnDetection> decodeYoloV8DFL(rknn_output* outputs,
+                                                float scale_x, float scale_y,
+                                                int img_w, int img_h);
 };
 
 #endif // RKNN_TEST_H
