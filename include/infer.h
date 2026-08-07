@@ -96,6 +96,9 @@ struct AbandonInputData{
 inline std::unique_ptr<BatchPipeline> g_pipeline;
 inline SafeQueue<InferResult, 30> g_post_queue;
 inline std::vector<SafeQueue<CameraResult, 3>> g_result_queues;
+// RKNN 统一队列：4路摄像头推帧，3个推理线程消费
+inline SafeQueue<BatchFrameData, 30> g_infer_queue;
+// Sophon 仍使用 per-camera 队列
 inline std::vector<SafeQueue<BatchFrameData, 3>> g_cam_frame_queues;
 #endif
 

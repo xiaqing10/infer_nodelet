@@ -22,7 +22,6 @@ public:
 
 private:
     YoloV8_det detectors_[RKNN_NUM_CORES];
-    std::atomic<int> next_core_idx_{0};
 };
 
 #endif

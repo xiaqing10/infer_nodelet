@@ -25,7 +25,40 @@
 //#include <cnrt.h>
 using namespace std;
 
-#if USE_SOPHON || USE_RKNN
+#if USE_RKNN
+static void rknn_infer_thread(int core_id) {
+    LOG_INFO("[rknn_infer] thread started, core=%d", core_id);
+    YoloV8_det& det = static_cast<RknnPipeline*>(g_pipeline.get())->getDetector(core_id);
+
+    while (ros::ok()) {
+        BatchFrameData fd;
+        if (!g_infer_queue.ConsumeSync(fd)) {
+            continue;
+        }
+
+        YoloV8BoxVec boxes;
+        int ret = det.Detect(fd.mat, boxes);
+        if (ret != 0) continue;
+
+        CameraResult cr;
+        cr.frame = std::move(fd.mat);
+        cr.img_time_sec = fd.img_time_sec;
+        cr.img_time_nsec = fd.img_time_nsec;
+        for (auto& box : boxes) {
+            DetectorRetData d;
+            d.label = box.class_id + 1;
+            d.confidence = box.score;
+            d.xmin = (int)box.x1;
+            d.ymin = (int)box.y1;
+            d.xmax = (int)box.x2;
+            d.ymax = (int)box.y2;
+            cr.detections.push_back(d);
+        }
+
+        g_result_queues[fd.camera_id].Produce(std::move(cr));
+    }
+}
+#elif USE_SOPHON
 static void batch_preprocess_thread(int batch_size) {
     LOG_INFO("[batch_pre] thread started, batch_size=%d", batch_size);
     int num_cameras = g_cam_frame_queues.size();
@@ -192,19 +225,24 @@ void InferDet::setShmParam(const std::string& shm_name_) {
 
 void InferDet::processHz() {
     std_msgs::Float32 hz_data;
-    // More efficient rate calculation
+    // 统计周期 5 秒。用 steady_clock 测量实际经过时间，
+    // 避免 ros::Rate 在 ROS 时间漂移时产生"双触发+跳帧"导致读数失真。
     const double rate_duration = 5.0;
-    ros::Rate rate(1.0 / rate_duration);
+    auto last = std::chrono::steady_clock::now();
     
     while (ros::ok()) {  // Ensure clean shutdown
         try {
-            rate.sleep();
+            std::this_thread::sleep_for(std::chrono::milliseconds((long long)(rate_duration * 1000.0)));
+            auto now = std::chrono::steady_clock::now();
+            double elapsed = std::chrono::duration<double>(now - last).count();
+            last = now;
+            if (elapsed <= 0.0) elapsed = rate_duration;
             double current_fps = 0.0;
             
             // Minimize lock duration
             {
                 std::lock_guard<std::mutex> lock(mtx);
-                current_fps = static_cast<double>(publish_hz) / rate_duration;
+                current_fps = static_cast<double>(publish_hz) / elapsed;
                 publish_hz = 0;
             }
             
@@ -364,7 +402,16 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
         frame.copyTo(img_src);
 
-#if USE_SOPHON || USE_RKNN
+#if USE_RKNN
+        {
+            BatchFrameData bfd;
+            bfd.mat = frame.clone();
+            bfd.camera_id = camera_id_;
+            bfd.frame_width = frame.cols;
+            bfd.frame_height = frame.rows;
+            g_infer_queue.Produce(std::move(bfd));
+        }
+#elif USE_SOPHON
         {
             BatchFrameData bfd;
             bfd.mat = frame.clone();
@@ -686,7 +733,29 @@ int  InferDet::processRadarCamera(int index){
     infer_nodelet::RadarTrackObjectProject::ConstPtr  msg_track;
 
     // 如果是SHM模式，启动独立读取线程
-#if USE_SOPHON || USE_RKNN
+#if USE_RKNN
+    if (use_shm) {
+        std::thread([this, index]() {
+            while (ros::ok()) {
+                void* data = nullptr;
+                int size = 0;
+                int result = shm_reader->nocopyRead((void**)&data, size);
+                if (result >= 0 && data) {
+                    auto* pkt = static_cast<ehawkeye::modules::common::packet*>(data);
+                    cv::Mat mat = cv::Mat(pkt->height, pkt->width, CV_8UC3, pkt->data).clone();
+                    BatchFrameData bfd;
+                    bfd.mat = mat;
+                    bfd.camera_id = camera_id_;
+                    bfd.frame_width = mat.cols;
+                    bfd.frame_height = mat.rows;
+                    bfd.img_time_sec = (double)(pkt->dts / 1000000LL);
+                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
+                    g_infer_queue.Produce(std::move(bfd));
+                }
+            }
+        }).detach();
+    }
+#elif USE_SOPHON
     if (use_shm) {
         std::thread([this, index]() {
             while (ros::ok()) {
@@ -812,8 +881,8 @@ else{
 #if !USE_SOPHON && !USE_RKNN
             mat_receive.copyTo(img_src);
 #endif
-#if USE_SOPHON || USE_RKNN
-            // Batch pipeline: push frame to per-camera queue, return immediately
+#if USE_RKNN
+            // Unified queue: push frame to single queue, infer threads consume
             BatchFrameData bfd;
             bfd.mat = mat_receive.clone();
             bfd.camera_id = camera_id_;
@@ -821,10 +890,10 @@ else{
             bfd.frame_height = mat_receive.rows;
             bfd.img_time_sec = img_time_sec;
             bfd.img_time_nsec = img_time_nsec;
-            g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
+            g_infer_queue.Produce(std::move(bfd));
             // 结果由 processResult 线程异步消费
             continue;
-#else
+#elif USE_SOPHON
             std::vector<DetectorRetData>  res = detector.inference(mat_receive);
             // add seg draw 
             /*
@@ -1299,6 +1368,9 @@ void InferDet::processResult() {
         tracker_msg.objects_number = objects_number;
         pub_tracker.publish(tracker_msg);
 
+        // 跟踪数据每帧必发布，与图像同步；以跟踪数据发布为准统计每路实际帧率
+        publish_hz += 1;
+
         // 图像发布：写入 publish slot，由独立的 publishThread 异步消费
         if (publish_img) {
             std::lock_guard<std::mutex> lock(pub_slot_.mtx);
@@ -1308,7 +1380,6 @@ void InferDet::processResult() {
             pub_slot_.ready = true;
         }
 
-        publish_hz += 1;
         local_frame_count++;
 
         auto once_end_time = std::chrono::system_clock::now();
@@ -1838,9 +1909,11 @@ private_nh.getParam("test/shm_name", param.shm_name);
             g_result_queues.resize(infer_params.size());
             g_cam_frame_queues.resize(infer_params.size());
 
-            // 启动全局三段式流水线线程
-            std::thread(batch_preprocess_thread, batch_size).detach();
-            std::thread(batch_postprocess_thread).detach();
+            // 启动3个独立推理线程，每个绑定一个NPU核心
+            for (int core = 0; core < RKNN_NUM_CORES; core++) {
+                std::thread(rknn_infer_thread, core).detach();
+            }
+            // 结果由 processResult 线程异步消费
 #endif
 
             // Start inference threads -------------------------------------------

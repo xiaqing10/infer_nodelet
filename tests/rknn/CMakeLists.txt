@@ -20,3 +20,6 @@ target_link_libraries(rknn_benchmark ${OpenCV_LIBS} rknn_api pthread)
 
 add_executable(multi_instance_bench multi_instance_bench.cpp)
 target_link_libraries(multi_instance_bench ${OpenCV_LIBS} rknn_api pthread)
+
+add_executable(rknn_4way_bench rknn_4way_bench.cpp)
+target_link_libraries(rknn_4way_bench ${OpenCV_LIBS} rknn_api pthread)

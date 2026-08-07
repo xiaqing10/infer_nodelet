@@ -34,3 +34,27 @@ target_link_libraries(cambricon_bench
     cndrv cnrt
     pthread
 )
+
+add_executable(cambricon_multi_bench
+    cambricon_multi_bench.cpp
+    ${CN_TOOLS_DIR}/check.cpp
+    ${CN_TOOLS_DIR}/Timer.cpp
+    ${CN_INFERENCE_DIR}/Net.cc
+)
+target_link_libraries(cambricon_multi_bench
+    ${OpenCV_LIBS}
+    cndrv cnrt
+    pthread
+)
+
+add_executable(cambricon_real_bench
+    cambricon_real_bench.cpp
+    ${CN_TOOLS_DIR}/check.cpp
+    ${CN_TOOLS_DIR}/Timer.cpp
+    ${CN_INFERENCE_DIR}/Net.cc
+)
+target_link_libraries(cambricon_real_bench
+    ${OpenCV_LIBS}
+    cndrv cnrt
+    pthread
+)

@@ -1,11 +1,10 @@
 # Set up your params
 use_shm: false
-#det_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/best.rknn
-det_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/best_ultralytics_yolov8_pt.rknn
+det_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/kezhu-det_ultralytics_yolov8.rknn
 color_engine_name: /home/files/rvf/share/infer_nodelet/model/resnet18.rknn
-abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/cons_spill_all.rknn
-vechile_color_rate: 1500
-abandon_rate: 1500
+abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/kezhu-cons_spill_ultralytics_yolov8.rknn
+vechile_color_rate: 1500000
+abandon_rate: 15
 min_points_len: 40
 write_flag: false
 write_path: /data/rvf/infer_data/
@@ -32,7 +31,7 @@ test:
   video_path: ""
   receive_img_topic: /test
 camera_visual:
-  - {direction: upstream, focal_type: short, publish_img: true, draw_tracker: true}
-  - {direction: downstream, focal_type: short, publish_img: false, draw_tracker: true}
-  - {direction: downstream, focal_type: long, publish_img: false, draw_tracker: true}
-  - {direction: upstream, focal_type: long, publish_img: false, draw_tracker: true}
+  - {direction: upstream, focal_type: short, publish_img: false, draw_tracker: false}
+  - {direction: downstream, focal_type: short, publish_img: false, draw_tracker: false}
+  - {direction: downstream, focal_type: long, publish_img: false, draw_tracker: false}
+  - {direction: upstream, focal_type: long, publish_img: false, draw_tracker: false}

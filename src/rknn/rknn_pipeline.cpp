@@ -40,7 +40,7 @@ int RknnPipeline::preprocessAndInfer(
 
     std::vector<std::thread> threads(n);
     for (int i = 0; i < n; i++) {
-        int core_id = next_core_idx_.fetch_add(1, std::memory_order_relaxed) % RKNN_NUM_CORES;
+        int core_id = i % RKNN_NUM_CORES;
         YoloV8_det& det = detectors_[core_id];
 
         cv::Mat frame = batch_frames[i].mat.clone();

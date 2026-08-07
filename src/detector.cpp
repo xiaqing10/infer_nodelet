@@ -210,7 +210,7 @@ std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
         for (size_t j = 0; j < boxes[i].size(); j++) {
             YoloV8Box box = boxes[i][j];
             DetectorRetData d;
-            d.label = box.class_id;
+d.label = box.class_id + 1;
             d.confidence = box.score;
             d.xmin = (int)box.x1;
             d.ymin = (int)box.y1;
@@ -283,9 +283,12 @@ std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
 
 void Detector::init(std::string model, int device_id, int num_class, int stride) {
     (void)device_id;
-    (void)num_class;
     (void)stride;
+    yolo_det.m_model_type = "v8";
     yolo_det.Init(model);
+    if (num_class > 0) {
+        yolo_det.m_class_num = num_class;
+    }
 }
 
 std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
