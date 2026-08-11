@@ -220,6 +220,19 @@ inline std::vector<SafeQueue<sensor_msgs::ImageConstPtr, 3>> imgQueue; // 图像
 // SafeQueue<infer_nodelet::RadarTrackObjectProject, 10 > trackQueue;  // 雷达跟踪队列
 inline std::vector<SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3>> trackQueue;  // 雷达跟踪队列
 
+// 平台级流水线程（infer_pipeline_threads.cpp 中实现，由 nodelet 入口启动）
+#if USE_RKNN
+void rknn_infer_thread(int core_id);
+#endif
+#if USE_SOPHON
+void batch_preprocess_thread(int batch_size);
+void batch_postprocess_thread();
+#endif
+
+// ROS 订阅回调（infer_auxiliary.cpp 中实现）
+void imgCallback(const sensor_msgs::ImageConstPtr& msg, int& index);
+void trackCallback(const infer_nodelet::RadarTrackObjectProject::ConstPtr msg, int& index);
+
 // vehicle_color (模型输出 0-7): 0=白, 1=黑, 2=红, 3=黄, 4=灰, 5=蓝, 6=绿, 7=棕
 inline std::vector<cv::Scalar> vehicle_colors = {
     cv::Scalar(255, 0, 255),  // 0: 默认

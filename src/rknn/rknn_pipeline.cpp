@@ -25,8 +25,8 @@ int RknnPipeline::init(const std::string& model_path, const std::string& model_t
     return 0;
 }
 
-int RknnPipeline::preprocessAndInfer(
-    const std::vector<BatchFrameData>& batch_frames,
+int RknnPipeline::preprocessAndForward(
+    std::vector<BatchFrameData>& batch_frames,
     InferResult& result) {
     int n = batch_frames.size();
     if (n == 0) return 0;
@@ -75,5 +75,9 @@ int RknnPipeline::preprocessAndInfer(
         threads[i].join();
     }
 
+    return 0;
+}
+
+int RknnPipeline::postProcess(InferResult& result) {
     return 0;
 }

@@ -23,7 +23,7 @@ elseif("@USE_RKNN@")
 else()
     set(CPACK_PACKAGE_NAME                              "infer-nvidia")
 endif()
-set(CPACK_PACKAGE_VERSION                           "2.2.2")
+set(CPACK_PACKAGE_VERSION                           "2.3.0")
 set(CPACK_PACKAGE_VENDOR                            "ehawkeye")
 # 设置联系方式
 set(CPACK_PACKAGE_CONTACT                           "xiaqing@ehawkeye.cn")

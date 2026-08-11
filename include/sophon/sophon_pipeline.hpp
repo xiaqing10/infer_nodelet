@@ -9,9 +9,10 @@
 class SophonPipeline : public BatchPipeline {
 public:
     int init(const std::string& model_path) override;
-    int preprocessAndInfer(
-        const std::vector<BatchFrameData>& batch_frames,
+    int preprocessAndForward(
+        std::vector<BatchFrameData>& batch_frames,
         InferResult& result) override;
+    int postProcess(InferResult& result) override;
     int getBatchSize() const override { return detector_.batch_size; }
 
     YoloV8_det& getDetector() { return detector_; }

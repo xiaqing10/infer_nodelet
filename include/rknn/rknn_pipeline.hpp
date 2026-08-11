@@ -13,9 +13,10 @@ class RknnPipeline : public BatchPipeline {
 public:
     int init(const std::string& model_path) override;
     int init(const std::string& model_path, const std::string& model_type);
-    int preprocessAndInfer(
-        const std::vector<BatchFrameData>& batch_frames,
+    int preprocessAndForward(
+        std::vector<BatchFrameData>& batch_frames,
         InferResult& result) override;
+    int postProcess(InferResult& result) override;
     int getBatchSize() const override { return RKNN_NUM_CORES; }
 
     YoloV8_det& getDetector(int core_id) { return detectors_[core_id]; }

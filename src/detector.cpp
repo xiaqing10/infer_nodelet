@@ -240,7 +240,7 @@ std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
     for (size_t j = 0; j < boxes.size(); j++) {
         YoloV8Box box = boxes[j];
         DetectorRetData d;
-        d.label = box.class_id;
+        d.label = box.class_id + 1;
         d.confidence = box.score;
         d.xmin = (int)box.x1;
         d.ymin = (int)box.y1;
@@ -297,7 +297,7 @@ std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
     yolo_det.Detect(img, boxes);
     for (auto& box : boxes) {
         DetectorRetData d;
-        d.label = box.class_id;
+        d.label = box.class_id + 1;
         d.confidence = box.score;
         d.xmin = (int)box.x1;
         d.ymin = (int)box.y1;

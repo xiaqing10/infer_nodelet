@@ -6,6 +6,10 @@
 #include <memory>
 #include <string>
 
+#if USE_SOPHON
+#include "sophon/detector_sophon.hpp"
+#endif
+
 // Forward-declare: full definition in detector.hpp
 struct DetectorRetData;
 
@@ -35,6 +39,13 @@ struct InferResult {
     std::vector<double> img_time_nsecs;
     std::vector<std::vector<DetectorRetData>> detections;  // per-frame detections
     int batch_size;
+#if USE_SOPHON
+    // Sophon 中间结果：由 pre 线程产出，post 线程消费（用于流水线重叠）
+    std::vector<bm_image> input_images;
+    std::vector<bm_tensor_t> output_tensors;
+    std::vector<std::pair<int, int>> txy_batch;
+    std::vector<std::pair<float, float>> ratios_batch;
+#endif
 };
 
 // 平台无关的 batch 流水线接口
@@ -44,10 +55,13 @@ public:
 
     virtual int init(const std::string& model_path) = 0;
 
-    // 预处理 + 推理：输入一批帧，输出检测结果
-    virtual int preprocessAndInfer(
-        const std::vector<BatchFrameData>& batch_frames,
+    // 预处理 + 前向推理：输入一批帧，输出中间结果（由 post 线程消费）
+    virtual int preprocessAndForward(
+        std::vector<BatchFrameData>& batch_frames,
         InferResult& result) = 0;
+
+    // 后处理：从中间结果生成检测框
+    virtual int postProcess(InferResult& result) = 0;
 
     virtual int getBatchSize() const = 0;
 };

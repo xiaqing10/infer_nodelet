@@ -1,8 +1,8 @@
 # Set up your params
 use_shm: false
-det_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/kezhu-det_ultralytics_yolov8.rknn
+det_engine_name: /home/files/rvf/share/infer_nodelet/model/kezhu-det_ultralytics_yolov8.rknn
 color_engine_name: /home/files/rvf/share/infer_nodelet/model/resnet18.rknn
-abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/rknn/kezhu-cons_spill_ultralytics_yolov8.rknn
+abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/kezhu-cons_spill_ultralytics_yolov8.rknn
 vechile_color_rate: 1500000
 abandon_rate: 15
 min_points_len: 40
