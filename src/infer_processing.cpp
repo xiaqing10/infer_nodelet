@@ -293,8 +293,8 @@ int InferDet::processRadarCamera(int index){
                     bfd.camera_id = camera_id_;
                     bfd.frame_width = mat.cols;
                     bfd.frame_height = mat.rows;
-                    bfd.img_time_sec = (double)(pkt->dts / 1000000LL);
-                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
+                    bfd.img_time_sec = (double)(pkt->dts / 1000000000LL);
+                    bfd.img_time_nsec = (double)(pkt->dts % 1000000000LL);
                     g_infer_queue.Produce(std::move(bfd));
                 }
             }
@@ -315,8 +315,8 @@ int InferDet::processRadarCamera(int index){
                     bfd.camera_id = camera_id_;
                     bfd.frame_width = mat.cols;
                     bfd.frame_height = mat.rows;
-                    bfd.img_time_sec = (double)(pkt->dts / 1000000LL);
-                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
+                    bfd.img_time_sec = (double)(pkt->dts / 1000000000LL);
+                    bfd.img_time_nsec = (double)(pkt->dts % 1000000000LL);
                     g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
                 }
             }
@@ -759,7 +759,12 @@ void InferDet::processResult() {
             AbandonInputData input_abandon_data;
             input_abandon_data.im = img_src.clone();
             input_abandon_data.data = res;
+#if USE_SOPHON
+            input_abandon_data.camera_id = camera_id_;
+            g_abandon_queue.Produce(std::move(input_abandon_data));
+#else
             abandonRecQueue.Produce(std::move(input_abandon_data));
+#endif
         }
 
         // 雷达数据
@@ -805,7 +810,14 @@ void InferDet::processResult() {
         std::vector<STrack> output_stracks = bytetrack.update(res);
 
         // 车辆颜色
-#if USE_SOPHON || USE_NVIDIA
+#if USE_SOPHON
+        while (true) {
+            VehicleColorResult vehicle_color_result;
+            auto _c = g_color_result_queues[camera_id_].Consume(vehicle_color_result);
+            if (!_c) break;
+            bytetrack.updateVehicleColor(vehicle_color_result.tracker_id, vehicle_color_result.vehicle_color, vehicle_color_result.confidence);
+        }
+#elif USE_NVIDIA
         while (true) {
             VehicleColorResult vehicle_color_result;
             auto _c = vehicleColorResultQueue.Consume(vehicle_color_result);
@@ -830,7 +842,16 @@ void InferDet::processResult() {
             if (x0 < 0 || y0 < 0 || x0 > img_src.cols || x0 + w > img_src.cols || w < 0 || h < 0 || y0 > img_src.rows || y0 + h > img_src.rows)
                 continue;
 
-#if USE_SOPHON || USE_NVIDIA
+#if USE_SOPHON
+            if (bbox.class_id > 2 && r.area() > 2000 && !bbox.color_lock) {
+                cv::Mat crop_vehicle_img = img_src(cv::Rect(r.x, r.y, r.width, r.height));
+                ModelInputData input_vehicle_data;
+                input_vehicle_data.im = crop_vehicle_img.clone();
+                input_vehicle_data.tracker_id = _id;
+                input_vehicle_data.camera_id = camera_id_;
+                g_color_queue.Produce(std::move(input_vehicle_data));
+            }
+#elif USE_NVIDIA
             if (bbox.class_id > 2 && r.area() > 2000 && !bbox.color_lock) {
                 cv::Mat crop_vehicle_img = img_src(cv::Rect(r.x, r.y, r.width, r.height));
                 ModelInputData input_vehicle_data;
@@ -857,7 +878,11 @@ void InferDet::processResult() {
         {
             DetectorRetDatas abandon_data;
             while (true) {
+#if USE_SOPHON
+                auto _abandon = g_abandon_result_queues[camera_id_].Consume(abandon_data);
+#else
                 auto _abandon = abandonResultQueue.Consume(abandon_data);
+#endif
                 if (!_abandon) break;
                 else abandon_results = abandon_data.data;
             }

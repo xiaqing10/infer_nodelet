@@ -69,6 +69,7 @@ struct InferParam{
 typedef struct ModelInputData{
     cv::Mat im;
     int tracker_id;
+    int camera_id;
 }ModelInputData;
 
 // 颜色分类结果
@@ -76,6 +77,7 @@ typedef struct ModelInputData{
     int tracker_id;
     int vehicle_color;
     float confidence;
+    int camera_id;
 };
 
 // 车牌识别结果
@@ -89,6 +91,7 @@ struct PlateRecResult{
 struct AbandonInputData{
     cv::Mat im;
     std::vector<DetectorRetData>  data ;
+    int camera_id;
 };
 
 // 全局 batch pipeline 接口（平台无关）
@@ -100,6 +103,16 @@ inline std::vector<SafeQueue<CameraResult, 3>> g_result_queues;
 inline SafeQueue<BatchFrameData, 30> g_infer_queue;
 // Sophon 仍使用 per-camera 队列
 inline std::vector<SafeQueue<BatchFrameData, 3>> g_cam_frame_queues;
+#endif
+
+#if USE_SOPHON
+// 全局共享的颜色分类与抛洒物模型（每路不再各自加载一份）
+inline std::unique_ptr<RESNET> g_color_model;
+inline SafeQueue<ModelInputData, 64> g_color_queue;
+inline std::vector<SafeQueue<VehicleColorResult, 3>> g_color_result_queues;
+inline std::unique_ptr<Detector> g_abandon_model;
+inline SafeQueue<AbandonInputData, 16> g_abandon_queue;
+inline std::vector<SafeQueue<DetectorRetDatas, 3>> g_abandon_result_queues;
 #endif
 
 class InferDet {
@@ -227,6 +240,8 @@ void rknn_infer_thread(int core_id);
 #if USE_SOPHON
 void batch_preprocess_thread(int batch_size);
 void batch_postprocess_thread();
+void color_infer_thread();
+void abandon_infer_thread();
 #endif
 
 // ROS 订阅回调（infer_auxiliary.cpp 中实现）

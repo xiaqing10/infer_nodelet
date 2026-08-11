@@ -171,8 +171,13 @@ namespace infer_ns {
 #else
             infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
 #endif
+#if USE_SOPHON
+            // Sophon 下颜色分类与抛洒物模型为全局共享单实例，在 onInit 中一次性加载，
+            // 这里不再为每路加载独立模型。
+#else
             infer_node->load_abandon_model(model_paths[3],dev_id,abandon_class,abandon_stride);
-#if USE_SOPHON || USE_NVIDIA
+#endif
+#if (USE_SOPHON || USE_NVIDIA) && !USE_SOPHON
             infer_node->load_color_model(model_paths[1]);
 #endif
 
@@ -199,10 +204,12 @@ namespace infer_ns {
             std::thread(&InferDet::processResult, infer_node).detach();
             std::thread(&InferDet::publishThread, infer_node).detach();
 #endif
-#if USE_SOPHON || USE_NVIDIA
+#if (USE_SOPHON || USE_NVIDIA) && !USE_SOPHON
             std::thread(&InferDet::vehicleColor, infer_node).detach();
 #endif
+#if !USE_SOPHON
             std::thread(&InferDet::abandonDetect, infer_node).detach();
+#endif
 
             // Create subscribers (only for non-video mode)
             if (param.video_path.empty()) {
@@ -385,10 +392,22 @@ namespace infer_ns {
             // 初始化结果队列（每个相机一个）
             g_result_queues.resize(infer_params.size());
             g_cam_frame_queues.resize(infer_params.size());
+            g_color_result_queues.resize(infer_params.size());
+            g_abandon_result_queues.resize(infer_params.size());
 
-            // 启动全局三段式流水线线程
+            // 全局共享的颜色分类与抛洒物模型：只加载一次，供所有相机复用
+            g_color_model = std::make_unique<RESNET>();
+            g_color_model->Init(model_paths[1]);
+            LOG_INFO("Global color model initialized: %s", model_paths[1].c_str());
+            g_abandon_model = std::make_unique<Detector>();
+            g_abandon_model->init(model_paths[3], 0, 3, 3);
+            LOG_INFO("Global abandon model initialized: %s", model_paths[3].c_str());
+
+            // 启动全局三段式流水线线程 + 共享 worker
             std::thread(batch_preprocess_thread, batch_size).detach();
             std::thread(batch_postprocess_thread).detach();
+            std::thread(color_infer_thread).detach();
+            std::thread(abandon_infer_thread).detach();
 #elif USE_RKNN
             // 创建全局共享的 RKNN pipeline
             std::string det_model_type = "auto";

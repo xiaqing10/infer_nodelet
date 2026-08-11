@@ -95,4 +95,65 @@ void batch_postprocess_thread() {
         }
     }
 }
+
+// 全局共享的颜色分类 worker：消费所有路相机提交的车俩 crop，路由结果回对应路
+void color_infer_thread() {
+    LOG_INFO("[color_infer] thread started");
+    while (ros::ok()) {
+        ModelInputData input_data;
+        if (!g_color_queue.ConsumeSync(input_data)) {
+            continue;
+        }
+        ClsRetData cls_ret = g_color_model->inference(input_data.im);
+        VehicleColorResult vcr;
+        vcr.tracker_id = input_data.tracker_id;
+        vcr.vehicle_color = cls_ret.label;
+        vcr.confidence = cls_ret.confidence;
+        vcr.camera_id = input_data.camera_id;
+        if (input_data.camera_id >= 0 && input_data.camera_id < (int)g_color_result_queues.size()) {
+            g_color_result_queues[input_data.camera_id].Produce(std::move(vcr));
+        }
+    }
+}
+
+// 全局共享的抛洒物检测 worker：消费所有路相机提交的（帧+同帧det框），过滤后路由回对应路
+void abandon_infer_thread() {
+    LOG_INFO("[abandon_infer] thread started");
+    while (ros::ok()) {
+        AbandonInputData input_data;
+        if (!g_abandon_queue.ConsumeSync(input_data)) {
+            continue;
+        }
+
+        cv::Mat img = input_data.im;
+        auto results = g_abandon_model->inference(img);
+
+        std::vector<DetectorRetData> valid_results;
+        valid_results.reserve(results.size());
+        std::copy_if(results.begin(), results.end(), std::back_inserter(valid_results),
+            [&img](const auto& obj) {
+                return obj.xmin >= 0 && obj.ymin >= 0 &&
+                       obj.xmax < img.cols && obj.ymax < img.rows;
+            });
+
+        std::vector<DetectorRetData> filtered;
+        for (const auto& new_obj : valid_results) {
+            bool match_found = std::any_of(input_data.data.begin(), input_data.data.end(),
+                [&new_obj](const auto& existing_obj) {
+                    return CalculateOverlap(
+                        new_obj.xmin, new_obj.ymin, new_obj.xmax, new_obj.ymax,
+                        existing_obj.xmin, existing_obj.ymin, existing_obj.xmax, existing_obj.ymax
+                    ) > 0.1f;
+                });
+            if (!match_found) {
+                filtered.push_back(new_obj);
+            }
+        }
+
+        DetectorRetDatas results_data{{std::move(filtered)}};
+        if (input_data.camera_id >= 0 && input_data.camera_id < (int)g_abandon_result_queues.size()) {
+            g_abandon_result_queues[input_data.camera_id].Produce(std::move(results_data));
+        }
+    }
+}
 #endif

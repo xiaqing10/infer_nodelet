@@ -52,7 +52,9 @@ int BYTETracker::updateVehicleColor(int xxTracker_id, int vehicle_color, float s
                                       return left.second < right.second;
                                   });
             this->tracked_stracks[i].vehicle_color = _i->first;
-            if (this->tracked_stracks[i].color_hits[_i->first] > 4) {
+            // 降低命中阈值以配合降低的颜色检测频率：仍保留小规模投票，
+            // 不锁定首帧，但比原 >4 更快锁定，避免因采样稀疏导致长期无法锁定。
+            if (this->tracked_stracks[i].color_hits[_i->first] > 1) {
                 this->tracked_stracks[i].color_lock = true;
             }
             break;
