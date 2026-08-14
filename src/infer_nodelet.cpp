@@ -85,6 +85,7 @@ namespace infer_ns {
                                  int vechile_color_rate,
                                  const std::string& byte_track_config_file,
                                  bool write_flag,
+                                 bool save_img_flag,
                                  const std::string& write_path,
                                  int min_points_len,
                                  ros::NodeHandle& nh) {
@@ -105,7 +106,7 @@ namespace infer_ns {
                                   vechile_color_rate, abandon_rate,
                                   param.publish_img,
                                   param.draw_tracker);
-            infer_node->setWriteParam(byte_track_config_file, write_flag,
+            infer_node->setWriteParam(byte_track_config_file, write_flag, save_img_flag,
                                      write_path, min_points_len);
             bool use_shm = false;
             nh.param("use_shm", use_shm, false);
@@ -324,6 +325,7 @@ namespace infer_ns {
             int abandon_rate = 5, vechile_color_rate = 10, min_points_len = 30;
             std::string write_path = "/home/files/nfsroot/", byte_track_config_file = "";
             bool write_flag = false;
+            bool save_img_flag = false;
 
             private_nh.param("abandon_rate", abandon_rate, abandon_rate);
             private_nh.param("vechile_color_rate", vechile_color_rate, vechile_color_rate);
@@ -331,6 +333,7 @@ namespace infer_ns {
             private_nh.param("write_path", write_path, write_path);
             private_nh.param("byte_track_config_file", byte_track_config_file, byte_track_config_file);
             private_nh.param("write_flag", write_flag, write_flag);
+            private_nh.param("save_img_flag", save_img_flag, save_img_flag);
 
             XmlRpc::XmlRpcValue params;
             private_nh.getParam("model", params);
@@ -457,7 +460,7 @@ namespace infer_ns {
 
                 startInferenceThread(infer_params[infer_index], model_paths,dev_id, det_class,det_stride,abandon_class,abandon_stride ,abandon_rate,
                                     vechile_color_rate, byte_track_config_file,
-                                    write_flag, write_path, min_points_len, private_nh);
+                                    write_flag, save_img_flag, write_path, min_points_len, private_nh);
             }
         }
     };

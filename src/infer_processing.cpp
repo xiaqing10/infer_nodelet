@@ -39,7 +39,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
-    BYTETracker bytetrack(params, write_flag, write_path, min_points_len, camera_type, camera_direction);
+    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len, camera_type, camera_direction);
     bytetrack.setTrackRemovedCallback(
         [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
             std::vector<TrackPoint> pts;
@@ -293,8 +293,8 @@ int InferDet::processRadarCamera(int index){
                     bfd.camera_id = camera_id_;
                     bfd.frame_width = mat.cols;
                     bfd.frame_height = mat.rows;
-                    bfd.img_time_sec = (double)(pkt->dts / 1000000000LL);
-                    bfd.img_time_nsec = (double)(pkt->dts % 1000000000LL);
+                    bfd.img_time_sec = (double)(pkt->dts / 1000LL);
+                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
                     g_infer_queue.Produce(std::move(bfd));
                 }
             }
@@ -315,8 +315,8 @@ int InferDet::processRadarCamera(int index){
                     bfd.camera_id = camera_id_;
                     bfd.frame_width = mat.cols;
                     bfd.frame_height = mat.rows;
-                    bfd.img_time_sec = (double)(pkt->dts / 1000000000LL);
-                    bfd.img_time_nsec = (double)(pkt->dts % 1000000000LL);
+                    bfd.img_time_sec = (double)(pkt->dts / 1000LL);
+                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
                     g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
                 }
             }
@@ -327,7 +327,7 @@ int InferDet::processRadarCamera(int index){
     // 跟踪部分
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
-    BYTETracker bytetrack(params, write_flag, write_path, min_points_len,  camera_type, camera_direction);
+    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len,  camera_type, camera_direction);
     bytetrack.setTrackRemovedCallback(
         [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
             std::vector<TrackPoint> pts;
@@ -704,7 +704,7 @@ void InferDet::processResult() {
 
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
-    BYTETracker bytetrack(params, write_flag, write_path, min_points_len, camera_type, camera_direction);
+    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len, camera_type, camera_direction);
     bytetrack.setTrackRemovedCallback(
         [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
             std::vector<TrackPoint> pts;
@@ -795,7 +795,7 @@ void InferDet::processResult() {
         }
 
         // Cache frame for montage
-        if (write_flag) {
+        if (save_img_flag) {
             int current_fid = bytetrack.getFrameId() + 1;
             if (current_fid % cache_interval_ == 0) {
                 cv::Mat small;

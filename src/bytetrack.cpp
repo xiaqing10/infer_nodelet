@@ -16,7 +16,7 @@
 
 std::string g_track_log_prefix = "[TRACK]";
 
-BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, std::string write_path_, int min_points_len_,  std::string camera_type_, std::string camera_direction_) {
+BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, bool save_img_flag_, std::string write_path_, int min_points_len_,  std::string camera_type_, std::string camera_direction_) {
   this->track_thresh = params.track_thresh;
   this->match_thresh = params.match_thresh;
   this->frame_rate = params.frame_rate;
@@ -26,6 +26,7 @@ BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, std::
   this->max_time_lost = int(this->frame_rate / 20.0 * this->track_buffer);
 
   this->write_flag = write_flag_;
+  this->save_img_flag = save_img_flag_;
   this->write_path = write_path_;
   this->camera_type = camera_type_;
   this->camera_direction = camera_direction_;
@@ -270,13 +271,15 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
 
     if(track->track_points.size() < 500){
         std::vector<float> point_with_class = {track->tlwh[0], track->tlwh[1], track->tlwh[2], track->tlwh[3],
-                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id)};
+                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id),
+                                              det->score, static_cast<float>(track->class_id)};
         track->track_points.push_back(point_with_class);
     }
     else{
         track->track_points.erase(track->track_points.begin());
         std::vector<float> point_with_class = {track->tlwh[0], track->tlwh[1], track->tlwh[2], track->tlwh[3],
-                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id)};
+                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id),
+                                              det->score, static_cast<float>(track->class_id)};
         track->track_points.push_back(point_with_class);
     }
   }
@@ -360,13 +363,15 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
 
     if(track->track_points.size() < 500){
         std::vector<float> point_with_class = {track->tlwh[0], track->tlwh[1], track->tlwh[2], track->tlwh[3],
-                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id)};
+                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id),
+                                              det->score, static_cast<float>(track->class_id)};
         track->track_points.push_back(point_with_class);
     }
     else{
         track->track_points.erase(track->track_points.begin());
         std::vector<float> point_with_class = {track->tlwh[0], track->tlwh[1], track->tlwh[2], track->tlwh[3],
-                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id)};
+                                              static_cast<float>(det->class_id), static_cast<float>(this->frame_id),
+                                              det->score, static_cast<float>(track->class_id)};
         track->track_points.push_back(point_with_class);
     }
   }
@@ -554,20 +559,25 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
             float center_y = p[1] + p[3]/2;
             int point_class = static_cast<int>(p[4]);
             int frame_id = static_cast<int>(p[5]);
+            float point_score = p.size() > 6 ? p[6] : 0.0f;
+            int track_class = p.size() > 7 ? static_cast<int>(p[7]) : point_class;
             ofs << "frame_" << frame_id << ": x: " << center_x << ", y: " << center_y
-                << ", class: " << point_class << endl;
+                << ", det_class: " << point_class << ", score: " << std::fixed << std::setprecision(4) << point_score
+                << ", track_class: " << track_class << endl;
         }
       }
       ofs << endl;
       ofs.close();
 
       // Save corresponding image with trajectory drawn
-      if (this->write_flag && save_frame_cb_) {
+      if (this->save_img_flag && save_frame_cb_) {
         save_frame_cb_(removed_stracks[i].track_id,
                        removed_stracks[i].class_id,
                        removed_stracks[i].track_points,
                        prefix,
-                       this->camera_direction + "_" + this->camera_type + "_" + time_str);
+                       this->camera_direction + "_" + this->camera_type + "_" + time_str
+                           + "_" + to_string(removed_stracks[i].class_id)
+                           + "_" + to_string(removed_stracks[i].track_id));
       }
 
       if (track_removed_cb_) {

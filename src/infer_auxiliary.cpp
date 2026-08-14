@@ -64,9 +64,10 @@ void InferDet::load_color_model(std::string model_path){
 }
 #endif
 
-void InferDet::setWriteParam(std::string byte_track_config_file_, bool write_flag_, std::string write_path_, int min_points_len_){
+void InferDet::setWriteParam(std::string byte_track_config_file_, bool write_flag_, bool save_img_flag_, std::string write_path_, int min_points_len_){
     byte_track_config_file = byte_track_config_file_;
     write_flag = write_flag_;
+    save_img_flag = save_img_flag_;
     write_path = write_path_;
     if(min_points_len_ > 0 ) min_points_len = min_points_len_;
 

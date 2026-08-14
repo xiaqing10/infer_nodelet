@@ -7,6 +7,7 @@ vechile_color_rate: 15  # 车型检测的频率
 abandon_rate: 15  # 抛洒物检测的频率
 min_points_len: 40 # 轨迹保存的最小长度
 write_flag: false # 是否保存轨迹结果
+save_img_flag: false # 是否保存montage图片
 write_path: /data/rvf/infer_data/ # 轨迹结果保存的位置
 byte_track_config_file: /home/files/rvf/share/infer_nodelet/config/bytetrack.yaml # ByteTrack的配置文件
 

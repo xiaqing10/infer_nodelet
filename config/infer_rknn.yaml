@@ -7,6 +7,7 @@ vechile_color_rate: 1500000
 abandon_rate: 15
 min_points_len: 40
 write_flag: false
+save_img_flag: false
 write_path: /data/rvf/infer_data/
 byte_track_config_file: /home/files/rvf/share/infer_nodelet/config/bytetrack.yaml
 traffic_analyzer:

@@ -344,7 +344,7 @@ void track_thread(int camera_id, std::vector<bool>& img_pub_mask) {
 
     bytetrack_params params;
     bytetrack_yaml_parse("/home/files/rvf/share/infer_nodelet/config/bytetrack.yaml", params);
-    BYTETracker bytetrack(params, false, "", 30, "", "");
+    BYTETracker bytetrack(params, false, false, "", 30, "", "");
 
     int frame_seq = 0;
 

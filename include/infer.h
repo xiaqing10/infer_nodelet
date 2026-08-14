@@ -135,6 +135,7 @@ public:
 #endif
     void setWriteParam(std::string byte_track_config_file,
                        bool write_flag,
+                       bool save_img_flag,
                        std::string write_path,
                        int min_points_len);
 void setShmParam(const std::string& shm_name);
@@ -193,6 +194,7 @@ private:
     int abandon_rate = 5;
     int min_points_len = 30;
     bool write_flag = false;
+    bool save_img_flag = false;
     std::string write_path = "/tmp/";
     std::string byte_track_config_file;
     bool publish_img = true;

@@ -44,7 +44,7 @@ using SaveFrameCallback = std::function<void(int track_id, int class_id,
 
 class BYTETracker {
  public:
-  BYTETracker(const bytetrack_params& params, bool write_flag, std::string write_path,int min_points_len,  std::string camera_type, std::string camera_direction);
+  BYTETracker(const bytetrack_params& params, bool write_flag, bool save_img_flag, std::string write_path,int min_points_len,  std::string camera_type, std::string camera_direction);
   ~BYTETracker();
 
   vector<STrack> update(const vector<DetectorRetData>& objects);
@@ -101,6 +101,7 @@ class BYTETracker {
 
   int global_tracker_id = 0;
   bool write_flag = true;
+  bool save_img_flag = false;
   std::string write_path = "/home/files/nfsroot/";
   std::string camera_type = "";
   std::string camera_direction = "";
