@@ -123,6 +123,18 @@ public:
     int Detect(const cv::Mat& image, YoloV8BoxVec& boxes, int index = 0);
     void draw_result(cv::Mat& img, YoloV8BoxVec& result);
 
+    // Batch 推理接口
+    int pre_process(const std::vector<cv::Mat>& images);
+    int forward();
+    // 将当前 batch 的中间数据（letterbox 参数 + 原始输出）导出，随 InferResult 传给 post 线程。
+    // 避免 pre/post 两个线程并发访问检测器内部共享缓冲时被下一个 batch 覆盖（轨迹闪烁根因）。
+    void export_batch_data(std::vector<PreParam>& pparams, std::vector<float>& output);
+    // 从导出的 per-batch 数据解码（不读取内部共享状态，与 sophon 对齐）
+    int post_process(const std::vector<PreParam>& pparams, const std::vector<float>& output,
+                     std::vector<YoloV8BoxVec>& boxes, float score_thres = 0.25f,
+                     float iou_thres = 0.65f, int topk = 100);
+    int getBatchSize() const;
+
 private:
     void make_pipe(bool warmup = false);
     void letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size);
@@ -130,6 +142,8 @@ private:
     void infer();
     void postprocess(YoloV8BoxVec& boxes, float score_thres = 0.25f,
                      float iou_thres = 0.65f, int topk = 100);
+    // batch 推理：逐帧保存的预处理参数（post_process 按帧恢复使用）
+    std::vector<PreParam> pparam_batch_;
 
     int num_bindings = 0;
     int num_inputs  = 0;

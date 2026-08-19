@@ -25,6 +25,7 @@ typedef struct DetectorRetData{
     int ymin;
     int xmax;
     int ymax;
+    bool from_roi = false;  // 该检测是否来自 ROI 增强裁剪（用于可视化区分）
 }DetectorRetData;
 
 typedef struct DetectorRetDatas{

@@ -1,5 +1,17 @@
 # Set up your params
 use_shm: false
+batch_mode: false
+# ROI 放大检测增强（方案A）：ROI 抠图混入同一 batch 检测远处小目标
+roi_enabled: true            # 是否启用 ROI 增强
+roi_height_ratio: 0.5        # ROI 高度 = 原图高 * 比例，取 [0, 0.5] 上半区域
+roi_width_ratio: 0.5         # ROI 保留宽度 = 原图宽 * 比例，水平居中，取 [0.25, 0.75]
+nms_iou_threshold: 0.3       # 主图 + ROI 检测结果合并去重的 IoU 阈值
+process_delay_print_interval: 20  # 处理延时打印间隔（秒），0 表示关闭
+# 批填充目标（完整帧槽位数）。不设置(-1)时自动取实际启用相机数；ROI 开时内部钳制 ≤ batch_size/2
+# 6 路项目默认即可（自动=6），8 路项目若想满批可设 8
+max_full: 6
+# ROI 调试：保存裁剪的 ROI 图与带 ROI 框的原图（写到 write_path/roi_debug/），默认关
+roi_save_debug: false
 det_engine_name: /home/files/rvf/share/infer_nodelet/model/detect_dh.engine
 color_engine_name: /home/files/rvf/share/infer_nodelet/model/vehicle_color_dh.engine
 abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/abandon_dh.engine
@@ -36,3 +48,12 @@ camera_visual:
   - {direction: downstream, focal_type: short, publish_img: false, draw_tracker: true}
   - {direction: downstream, focal_type: long, publish_img: false, draw_tracker: true}
   - {direction: upstream, focal_type: long, publish_img: false, draw_tracker: true}
+# 按 pole_name + direction + focal_type 精确过滤指定摄像头：enable=false 则该相机不创建推理线程、不占 batch 槽位
+camera_filter:
+  - {pole_name: mec_0000, direction: downstream, focal_type: long, enable: false}
+# per-camera ROI：按 pole_name + direction + focal_type 精确匹配，覆盖全局 roi_* 设置。
+# height_ratio/width_ratio = ROI 尺寸占原图比例；y_ratio/x_ratio = ROI 框左上角偏移占原图比例（0=顶部/左缘，0.5=居中）。
+# 未在列表中的相机自动回退到全局 roi_* 参数（位置默认 y=0 顶部、x=0.5 居中）。enabled=false 则该相机不生成 ROI 槽位。
+camera_roi:
+  - {pole_name: mec_0000, direction: upstream, focal_type: short, enabled: true, height_ratio: 0.5, width_ratio: 0.5, y_ratio: 0.0, x_ratio: 0.5}
+debug_log: false

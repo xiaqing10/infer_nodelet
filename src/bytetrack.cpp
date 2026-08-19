@@ -16,7 +16,7 @@
 
 std::string g_track_log_prefix = "[TRACK]";
 
-BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, bool save_img_flag_, std::string write_path_, int min_points_len_,  std::string camera_type_, std::string camera_direction_) {
+BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, bool save_img_flag_, std::string write_path_, int min_points_len_,  std::string camera_type_, std::string camera_direction_, std::string pole_name_) {
   this->track_thresh = params.track_thresh;
   this->match_thresh = params.match_thresh;
   this->frame_rate = params.frame_rate;
@@ -30,6 +30,7 @@ BYTETracker::BYTETracker(const bytetrack_params& params, bool write_flag_, bool 
   this->write_path = write_path_;
   this->camera_type = camera_type_;
   this->camera_direction = camera_direction_;
+  this->pole_name = pole_name_;
   g_track_log_prefix = "[TRACK:" + camera_type_ + ":" + camera_direction_ + "]";
   set_track_log_prefix(g_track_log_prefix);
   this->log_prefix = g_track_log_prefix;
@@ -541,7 +542,7 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
       mkdir_p(prefix);
 
       std::string time_str = ss.str();
-      std::string filename = prefix + this->camera_direction + "_" + this->camera_type + "_" + time_str + "_" + to_string(removed_stracks[i].class_id) + "_" + to_string(removed_stracks[i].track_id)+ ".txt";
+      std::string filename = prefix + this->pole_name + "_" + this->camera_direction + "_" + this->camera_type + "_" + time_str + "_" + to_string(removed_stracks[i].class_id) + "_" + to_string(removed_stracks[i].track_id)+ ".txt";
       ofs.open(filename, ios::app);
             if (ofs.is_open()) {
           ofs << "id: " << removed_stracks[i].track_id << " "
@@ -575,7 +576,7 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
                        removed_stracks[i].class_id,
                        removed_stracks[i].track_points,
                        prefix,
-                       this->camera_direction + "_" + this->camera_type + "_" + time_str
+                       this->pole_name + "_" + this->camera_direction + "_" + this->camera_type + "_" + time_str
                            + "_" + to_string(removed_stracks[i].class_id)
                            + "_" + to_string(removed_stracks[i].track_id));
       }
@@ -591,7 +592,7 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
           if (!event_type_str.empty()) {
             ofs_event << "event: " << event_type_str << endl;
             ofs_event.close();
-            std::string new_filename = prefix + this->camera_direction + "_" + this->camera_type + "_" + time_str + "_" + to_string(removed_stracks[i].class_id) + "_" + to_string(removed_stracks[i].track_id) + "_" + event_type_str + ".txt";
+            std::string new_filename = prefix + this->pole_name + "_" + this->camera_direction + "_" + this->camera_type + "_" + time_str + "_" + to_string(removed_stracks[i].class_id) + "_" + to_string(removed_stracks[i].track_id) + "_" + event_type_str + ".txt";
             rename(filename.c_str(), new_filename.c_str());
             filename = new_filename;
           } else {

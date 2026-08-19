@@ -43,6 +43,7 @@ int SophonPipeline::preprocessAndForward(
     result.camera_ids.resize(n);
     result.img_time_secs.resize(n);
     result.img_time_nsecs.resize(n);
+    result.receive_local_ms_list.resize(n);
     result.frames.resize(n);
     result.batch_size = n;
 
@@ -51,6 +52,7 @@ int SophonPipeline::preprocessAndForward(
         result.camera_ids[i] = batch_frames[i].camera_id;
         result.img_time_secs[i] = batch_frames[i].img_time_sec;
         result.img_time_nsecs[i] = batch_frames[i].img_time_nsec;
+        result.receive_local_ms_list[i] = batch_frames[i].receive_local_ms;
     }
 
     return 0;

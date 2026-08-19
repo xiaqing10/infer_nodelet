@@ -40,11 +40,12 @@
 #if USE_RKNN
 #include "rknn/rknn_pipeline.hpp"
 #endif
-#include "shm/shmmem.h"
-#include "shm/packet.h"
 #if USE_NVIDIA
 #include "nvidia/vehicle_color.hpp"
+#include "nvidia/nvidia_pipeline.hpp"
 #endif
+#include "shm/shmmem.h"
+#include "shm/packet.h"
 using namespace cv;
 
 
@@ -95,14 +96,39 @@ struct AbandonInputData{
 };
 
 // 全局 batch pipeline 接口（平台无关）
-#if USE_SOPHON || USE_RKNN
+#if USE_SOPHON || USE_RKNN || USE_NVIDIA
 inline std::unique_ptr<BatchPipeline> g_pipeline;
-inline SafeQueue<InferResult, 30> g_post_queue;
-inline std::vector<SafeQueue<CameraResult, 3>> g_result_queues;
+inline SafeQueue<InferResult, 2> g_post_queue;
+inline std::vector<SafeQueue<CameraResult, 2>> g_result_queues;
 // RKNN 统一队列：4路摄像头推帧，3个推理线程消费
 inline SafeQueue<BatchFrameData, 30> g_infer_queue;
-// Sophon 仍使用 per-camera 队列
-inline std::vector<SafeQueue<BatchFrameData, 3>> g_cam_frame_queues;
+// Sophon 仍使用 per-camera 队列；容量 2 以吸收 pre_thread 攒批等待期间的输入帧，同时降低图像积压延迟
+inline std::vector<SafeQueue<BatchFrameData, 2>> g_cam_frame_queues;
+#endif
+
+// per-camera ROI 配置（按 camera_id = infer_params 索引）。
+// 仅 batch 模式 ROI 生成时使用；未被 camera_roi 配置覆盖的相机用默认值（回退到全局 ROI 参数）。
+struct CameraRoiConfig {
+    bool has_cfg = false;    // 该相机是否在 camera_roi 列表中显式配置
+    bool enabled = true;
+    float height_ratio = 0.5f;  // ROI 高度 = 原图高 * 比例
+    float width_ratio = 0.5f;   // ROI 宽度 = 原图宽 * 比例
+    float y_ratio = 0.0f;       // ROI 框左上角纵向偏移（原图高 * 比例，0=顶部）
+    float x_ratio = 0.5f;       // ROI 框左上角横向偏移（原图宽 * 比例，0.5=居中）
+};
+
+#if USE_NVIDIA
+// NVIDIA batch 模式开关（运行时配置）：false=单路同步，true=镜像 SOPHON 的 batch 流水线
+inline bool g_nvidia_batch_mode = false;
+// per-camera ROI 配置表（索引 = camera_id，在 infer_nodelet 构建 infer_params 后填充）
+inline std::vector<CameraRoiConfig> g_camera_roi;
+// 逐环节每路帧计数（用于定位帧在哪一环丢失）：input=进入相机队列, pre=pre_thread取到, post=分发到结果队列
+inline std::vector<long long> g_frame_cnt_input;
+inline std::vector<long long> g_frame_cnt_pre;
+inline std::vector<long long> g_frame_cnt_post;
+// ROI 调试：保存裁剪的 ROI 图与带 ROI 框的原图（仅 batch 模式 ROI 启用时使用）
+inline bool g_roi_save_debug = false;
+inline std::string g_roi_save_path = "/tmp/";
 #endif
 
 #if USE_SOPHON
@@ -138,13 +164,18 @@ public:
                        bool save_img_flag,
                        std::string write_path,
                        int min_points_len);
-void setShmParam(const std::string& shm_name);
+    void setShmParam(const std::string& shm_name);
+    void setRoiParams(bool roi_enabled, float roi_height_ratio, float roi_width_ratio,
+                      float roi_y_ratio, float roi_x_ratio);
+    void setProcessDelayPrintInterval(int interval_sec) { if (interval_sec > 0) process_delay_print_interval = interval_sec; }
 
     void setCameraId(int id) { camera_id_ = id; }
     int getCameraId() const { return camera_id_; }
 
     int processRadarCamera(int index);
-#if USE_SOPHON || USE_RKNN
+    // 在图像上绘制 ROI 增强检测区域框（batch / 非 batch 路径共用）
+    void drawRoiBox(cv::Mat& img);
+#if USE_SOPHON || USE_RKNN || USE_NVIDIA
     void processResult();
     void publishThread();
 #endif
@@ -183,8 +214,10 @@ private:
 
     double img_time_sec = 0.0;
     double img_time_nsec = 0.0;
-    double radar_time_sec = 0.0;
-    double radar_time_nsec = 0.0;
+    // 本机接收该帧的本地墙钟(ms)，用于在发布点计算处理延时（与数据源时钟无关）
+    int64_t receive_local_ms = 0;
+    int process_delay_print_interval = 20;  // 处理延时打印间隔(秒)
+    long long last_delay_print_ms = 0;      // 上次打印处理延时的本地墙钟(ms)
     std::atomic<int> publish_hz{0};
 
     std::string camera_type;
@@ -199,6 +232,12 @@ private:
     std::string byte_track_config_file;
     bool publish_img = true;
     bool draw_tracker = true;
+    // ROI 增强可视化参数（绘制检测增强区域框）
+    bool roi_enabled = false;
+    float roi_height_ratio = 0.5f;
+    float roi_width_ratio = 0.5f;
+    float roi_y_ratio = 0.0f;
+    float roi_x_ratio = 0.5f;
     bool use_shm = false;
     std::string shm_name;
     std::shared_ptr<ehawkeye::modules::units::shmmem> shm_reader;
@@ -239,9 +278,11 @@ inline std::vector<SafeQueue<infer_nodelet::RadarTrackObjectProject::ConstPtr, 3
 #if USE_RKNN
 void rknn_infer_thread(int core_id);
 #endif
-#if USE_SOPHON
-void batch_preprocess_thread(int batch_size);
+#if USE_SOPHON || USE_NVIDIA
+void batch_preprocess_thread(int batch_size, int max_full);
 void batch_postprocess_thread();
+#endif
+#if USE_SOPHON
 void color_infer_thread();
 void abandon_infer_thread();
 #endif
@@ -249,6 +290,8 @@ void abandon_infer_thread();
 // ROS 订阅回调（infer_auxiliary.cpp 中实现）
 void imgCallback(const sensor_msgs::ImageConstPtr& msg, int& index);
 void trackCallback(const infer_nodelet::RadarTrackObjectProject::ConstPtr msg, int& index);
+// 设置每相机杆号（诊断日志用，infer_auxiliary.cpp 中实现）
+void setCamPoleName(int index, const std::string& pole_name);
 
 // vehicle_color (模型输出 0-7): 0=白, 1=黑, 2=红, 3=黄, 4=灰, 5=蓝, 6=绿, 7=棕
 inline std::vector<cv::Scalar> vehicle_colors = {

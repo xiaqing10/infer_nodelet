@@ -39,7 +39,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
-    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len, camera_type, camera_direction);
+    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len, camera_type, camera_direction, pole_name);
     bytetrack.setTrackRemovedCallback(
         [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
             std::vector<TrackPoint> pts;
@@ -88,7 +88,13 @@ void InferDet::processVideoFile(std::string video_path, int index) {
         frame_count++;
         auto once_start_time = std::chrono::system_clock::now();
 
+#if USE_NVIDIA
+        if (!g_nvidia_batch_mode) {
+            frame.copyTo(img_src);
+        }
+#else
         frame.copyTo(img_src);
+#endif
 
 #if USE_RKNN
         {
@@ -109,6 +115,22 @@ void InferDet::processVideoFile(std::string video_path, int index) {
             g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
         }
 #else
+#if USE_NVIDIA
+        if (g_nvidia_batch_mode) {
+            BatchFrameData bfd;
+            bfd.mat = frame.clone();
+            bfd.camera_id = camera_id_;
+            bfd.frame_width = frame.cols;
+            bfd.frame_height = frame.rows;
+            bfd.img_time_sec = img_time_sec;
+            bfd.img_time_nsec = img_time_nsec;
+            bfd.receive_local_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
+            // 结果由 processResult 线程异步消费
+            continue;
+        }
+#endif
         std::vector<DetectorRetData> res = detector.inference(frame);
 
         for (auto& obj : res) {
@@ -247,6 +269,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
         tracker_msg.objects_number = objects_number;
 
         if (publish_img) {
+            drawRoiBox(img_src);
             cv_bridge::CvImage brigeImg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", img_src);
             pub_img.publish(brigeImg.toImageMsg());
         }
@@ -322,12 +345,34 @@ int InferDet::processRadarCamera(int index){
             }
         }).detach();
     }
+#elif USE_NVIDIA
+    if (use_shm && g_nvidia_batch_mode) {
+        std::thread([this, index]() {
+            while (ros::ok()) {
+                void* data = nullptr;
+                int size = 0;
+                int result = shm_reader->nocopyRead((void**)&data, size);
+                if (result >= 0 && data) {
+                    auto* pkt = static_cast<ehawkeye::modules::common::packet*>(data);
+                    cv::Mat mat = cv::Mat(pkt->height, pkt->width, CV_8UC3, pkt->data).clone();
+                    BatchFrameData bfd;
+                    bfd.mat = mat;
+                    bfd.camera_id = camera_id_;
+                    bfd.frame_width = mat.cols;
+                    bfd.frame_height = mat.rows;
+                    bfd.img_time_sec = (double)(pkt->dts / 1000LL);
+                    bfd.img_time_nsec = (double)((pkt->dts % 1000LL) * 1000000LL);
+                    g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
+                }
+            }
+        }).detach();
+    }
 #endif
 
     // 跟踪部分
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
-    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len,  camera_type, camera_direction);
+    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len,  camera_type, camera_direction, pole_name);
     bytetrack.setTrackRemovedCallback(
         [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
             std::vector<TrackPoint> pts;
@@ -364,7 +409,6 @@ int InferDet::processRadarCamera(int index){
     const int  DETECT_QUALITY_RATE  = 14 * 60;
     auto log_time = std::chrono::system_clock::now();  //    记录一次推理的开始时间
     std::vector<DetectorRetData> abandon_results;   // 主线程发的是这一段时间内检测的重复数据.
-    bool print_diff_time = true;  // 是否打印时间差
     int lost_radar_count = 0;
     ros::Rate loop_rate(15);
 #endif
@@ -376,6 +420,7 @@ int InferDet::processRadarCamera(int index){
 #if !USE_RKNN
         auto once_start_time = std::chrono::system_clock::now();
 #endif
+        int64_t receive_local_ms = 0;  // 本机接收该帧的本地墙钟(ms)，循环级作用域，供 produce 使用
 
 if (use_shm)
         {
@@ -390,6 +435,8 @@ if (use_shm)
             if(imgQueue[index].Consume(msg_img)){
             img_time_sec = msg_img -> header.stamp.sec;
             img_time_nsec = msg_img -> header.stamp.nsec;
+            receive_local_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
             lost_camera_count = 0;
             camera_offline_reported = false;
         }
@@ -426,7 +473,13 @@ if (use_shm)
 else{
             // LOG_INFO("START TO INFER & TRACKER");
 #if !USE_SOPHON && !USE_RKNN
+#if USE_NVIDIA
+            if (!g_nvidia_batch_mode) {
+                mat_receive.copyTo(img_src);
+            }
+#else
             mat_receive.copyTo(img_src);
+#endif
 #endif
 #if USE_RKNN
             // Unified queue: push frame to single queue, infer threads consume
@@ -437,6 +490,7 @@ else{
             bfd.frame_height = mat_receive.rows;
             bfd.img_time_sec = img_time_sec;
             bfd.img_time_nsec = img_time_nsec;
+            bfd.receive_local_ms = receive_local_ms;
             g_infer_queue.Produce(std::move(bfd));
             // 结果由 processResult 线程异步消费
             continue;
@@ -448,10 +502,27 @@ else{
             bfd.frame_height = mat_receive.rows;
             bfd.img_time_sec = img_time_sec;
             bfd.img_time_nsec = img_time_nsec;
+            bfd.receive_local_ms = receive_local_ms;
             g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
             // 结果由 processResult 线程异步消费
             continue;
 #else
+#if USE_NVIDIA
+            if (g_nvidia_batch_mode) {
+                BatchFrameData bfd;
+                bfd.mat = mat_receive.clone();
+                bfd.camera_id = camera_id_;
+                bfd.frame_width = mat_receive.cols;
+                bfd.frame_height = mat_receive.rows;
+                bfd.img_time_sec = img_time_sec;
+                bfd.img_time_nsec = img_time_nsec;
+                bfd.receive_local_ms = receive_local_ms;
+                g_frame_cnt_input[camera_id_]++;
+                g_cam_frame_queues[camera_id_].Produce(std::move(bfd));
+                // 结果由 processResult 线程异步消费
+                continue;
+            }
+#endif
             std::vector<DetectorRetData>  res = detector.inference(mat_receive);
             for (auto& obj : res) {
                 cv::Rect r01(obj.xmin, obj.ymin, obj.xmax-obj.xmin, obj.ymax-obj.ymin);
@@ -477,25 +548,7 @@ else{
             if(1){
                 auto t_ = trackQueue[index].Consume(msg_track);
                 if(t_ ) {
-                    radar_time_sec = msg_track->header.stamp.sec;
-                    radar_time_nsec = msg_track->header.stamp.nsec;
-
                     lost_radar_count = 0;
-
-                    int64_t time_diff = img_time_sec * 1000 + img_time_nsec / 1000000  - radar_time_sec * 1000 - radar_time_nsec/ 1000000;
-                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-
-                    //  每分钟的打印下时间差
-                    if (print_diff_time){
-                        if(time_diff < -400 || time_diff > 400) {
-                            LOG_WARN("Diff Time: %s %s  %ld img: %lf  radar: %lf ",camera_direction.c_str(), camera_type.c_str(),  time_diff, (img_time_sec * 1000 + img_time_nsec / 1000000 -ms ),(radar_time_sec * 1000 + radar_time_nsec/ 1000000 -ms ));
-                            }
-
-                        else{
-                            LOG_INFO("Diff Time: %s %s  %ld img: %lf  radar: %lf ",camera_direction.c_str(), camera_type.c_str(), time_diff, (img_time_sec * 1000 + img_time_nsec / 1000000 -ms ),(radar_time_sec * 1000 + radar_time_nsec/ 1000000 -ms ));
-                        }
-                        print_diff_time = false;
-                    }
 
                     for (unsigned int i =0 ;i < msg_track->objects.size(); i ++){
                         if(camera_type == "long"){
@@ -676,6 +729,7 @@ cv::Scalar color = vehicle_colors[0];
             tracker_msg.frame_seq += 1;
             tracker_msg.objects_number = objects_number;
             if (publish_img) {
+                drawRoiBox(img_src);
                 cv_bridge::CvImage brigeImg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", img_src);
                 pub_img.publish(brigeImg.toImageMsg());
             }
@@ -688,7 +742,6 @@ cv::Scalar color = vehicle_colors[0];
             if (once_end_time - log_time > std::chrono::milliseconds(20000)) {
                 LOG_INFO("all infer consume: %ld ms" , std::chrono::duration_cast<std::chrono::milliseconds>(once_end_time - once_start_time).count());
                 log_time = once_end_time;
-                print_diff_time = true;
             }
 
             loop_rate.sleep();
@@ -698,13 +751,13 @@ cv::Scalar color = vehicle_colors[0];
 return 0;
 }
 
-#if USE_SOPHON || USE_RKNN
+#if USE_SOPHON || USE_RKNN || USE_NVIDIA
 void InferDet::processResult() {
     LOG_INFO("processResult thread running...");
 
     bytetrack_params params;
     bytetrack_yaml_parse(byte_track_config_file, params);
-    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len, camera_type, camera_direction);
+    BYTETracker bytetrack(params, write_flag, save_img_flag, write_path, min_points_len, camera_type, camera_direction, pole_name);
     bytetrack.setTrackRemovedCallback(
         [this](int track_id, int class_id, const std::vector<std::vector<float>>& track_points) -> std::string {
             std::vector<TrackPoint> pts;
@@ -740,19 +793,64 @@ void InferDet::processResult() {
     auto log_time = std::chrono::system_clock::now();
     int local_frame_count = 0;
     std::vector<DetectorRetData> abandon_results;
-    bool print_diff_time = true;
     int lost_radar_count = 0;
+#if USE_NVIDIA
+    // NVIDIA 发布链路分段计时：区分 Consume 等待 vs bytetrack.update vs 其余处理
+    long long result_consume_ms = 0, result_bytetrack_ms = 0, result_other_ms = 0;
+    // 诊断：逐帧时间戳间隔，判断帧到达是否均匀（区分数据源抖动 vs batch 帧间隔不均）
+    long long prev_img_ms = -1;
+    bool first_frame = true;
+#endif
 
     while (ros::ok()) {
         // 从推理结果队列消费（帧+检测结果）
         CameraResult cr;
+#if USE_NVIDIA
+        auto t_result = std::chrono::steady_clock::now();
+        long long result_consume_this = 0, result_bt_this = 0;
+#endif
         g_result_queues[camera_id_].ConsumeSync(cr);
+#if USE_NVIDIA
+        result_consume_this = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t_result).count();
+        result_consume_ms += result_consume_this;
+#endif
 
         std::vector<DetectorRetData> res = std::move(cr.detections);
         img_src = cr.frame;  // 浅拷贝，不涉及内存拷贝
         img_time_sec = cr.img_time_sec;
         img_time_nsec = cr.img_time_nsec;
+        receive_local_ms = cr.receive_local_ms;
 
+#if USE_NVIDIA
+        // 方案A 诊断可视化：仅由 ROI 增强检测出的框用绿色叠加，区分主图检测框。
+        if (roi_enabled) {
+            for (const auto& d : res) {
+                if (!d.from_roi) continue;
+                cv::Rect rr(d.xmin, d.ymin, d.xmax - d.xmin, d.ymax - d.ymin);
+                if (rr.width <= 0 || rr.height <= 0) continue;
+                if (rr.x < 0 || rr.y < 0 || rr.x + rr.width > img_src.cols || rr.y + rr.height > img_src.rows) continue;
+                cv::rectangle(img_src, rr, cv::Scalar(0, 255, 0), 2);
+            }
+        }
+#endif
+
+#if USE_NVIDIA
+        {
+            // 诊断：打印本路相邻两帧的时间戳间隔与消费间隔，判断帧到达/处理是否均匀
+            long long cur_ms = (long long)img_time_sec * 1000 + img_time_nsec / 1000000;
+            long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (first_frame) {
+                first_frame = false;
+            } else {
+                LOG_DEBUG("[frame-int] cam=%d img_gap=%lldms consume_this=%lldms",
+                          camera_id_, cur_ms - prev_img_ms, result_consume_this);
+            }
+            prev_img_ms = cur_ms;
+            (void)now_ms;
+        }
+#endif
         // 抛洒物检测
         rec_index++;
         if (rec_index % abandon_rate == 0) {
@@ -772,19 +870,7 @@ void InferDet::processResult() {
             infer_nodelet::RadarTrackObjectProject::ConstPtr msg_track;
             auto t_ = trackQueue[camera_id_].Consume(msg_track);
             if (t_) {
-                radar_time_sec = msg_track->header.stamp.sec;
-                radar_time_nsec = msg_track->header.stamp.nsec;
                 lost_radar_count = 0;
-
-                int64_t time_diff = img_time_sec * 1000 + img_time_nsec / 1000000 - radar_time_sec * 1000 - radar_time_nsec / 1000000;
-                if (print_diff_time) {
-                    if (time_diff < -400 || time_diff > 400) {
-                        LOG_WARN("Diff Time: %s %s  %ld", camera_direction.c_str(), camera_type.c_str(), time_diff);
-                    } else {
-                        LOG_INFO("Diff Time: %s %s  %ld", camera_direction.c_str(), camera_type.c_str(), time_diff);
-                    }
-                    print_diff_time = false;
-                }
             } else {
                 lost_radar_count++;
                 if (lost_radar_count == 1000 && camera_direction != "" && camera_type != "") {
@@ -807,7 +893,15 @@ void InferDet::processResult() {
         }
 
         // ByteTrack 跟踪
+#if USE_NVIDIA
+        auto t_bt = std::chrono::steady_clock::now();
+#endif
         std::vector<STrack> output_stracks = bytetrack.update(res);
+#if USE_NVIDIA
+        result_bt_this = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t_bt).count();
+        result_bytetrack_ms += result_bt_this;
+#endif
 
         // 车辆颜色
 #if USE_SOPHON
@@ -918,6 +1012,18 @@ void InferDet::processResult() {
         tracker_msg.header.frame_id = "image";
         tracker_msg.frame_seq += 1;
         tracker_msg.objects_number = objects_number;
+#if USE_NVIDIA
+        // 处理延时诊断：发布时刻本地墙钟 - 接收时刻本地墙钟（两端同本地时钟，与数据源时钟无关）。
+        // 反映图像从本节点接收到发布处理完成所经过的时间（含排队+推理+跟踪+画框）。
+        if (receive_local_ms > 0) {
+            long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            if (last_delay_print_ms == 0 || now_ms - last_delay_print_ms >= (long long)process_delay_print_interval * 1000) {
+                LOG_INFO("[proc-delay] pole=%s cam=%d delay=%lldms (recv_local=%lldms)", pole_name.c_str(), camera_id_, now_ms - receive_local_ms, receive_local_ms);
+                last_delay_print_ms = now_ms;
+            }
+        }
+#endif
         pub_tracker.publish(tracker_msg);
 
         // 跟踪数据每帧必发布，与图像同步；以跟踪数据发布为准统计每路实际帧率
@@ -933,17 +1039,58 @@ void InferDet::processResult() {
         }
 
         local_frame_count++;
+#if USE_NVIDIA
+        {
+            long long cycle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_result).count();
+            long long other_this = cycle_ms - result_consume_this - result_bt_this;
+            if (other_this < 0) other_this = 0;
+            result_other_ms += other_this;
+        }
+#endif
 
         auto once_end_time = std::chrono::system_clock::now();
         if (once_end_time - log_time > std::chrono::milliseconds(20000)) {
             auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(once_end_time - log_time).count();
             double fps = local_frame_count * 1000.0 / dt;
             LOG_INFO("%s %s freq: %.1f fps", camera_direction.c_str(), camera_type.c_str(), fps);
+#if USE_NVIDIA
+            if (local_frame_count > 0) {
+                LOG_DEBUG("[nvidia-result] %s %s frames=%d consume=%.2fms bt=%.2fms other=%.2fms",
+                         camera_direction.c_str(), camera_type.c_str(), local_frame_count,
+                         (double)result_consume_ms / local_frame_count,
+                         (double)result_bytetrack_ms / local_frame_count,
+                         (double)(result_other_ms) / local_frame_count);
+            }
+#endif
             local_frame_count = 0;
+#if USE_NVIDIA
+            result_consume_ms = 0;
+            result_bytetrack_ms = 0;
+            result_other_ms = 0;
+#endif
             log_time = once_end_time;
-            print_diff_time = true;
         }
     }
+}
+
+void InferDet::drawRoiBox(cv::Mat& img) {
+    // Draw ROI 增强检测区域框（配合 ROI 抠图增强，仅 NVIDIA + publish_img 时随图像输出）
+    // 尺寸与位置由 per-camera camera_roi 决定（y_ratio/x_ratio 为框左上角偏移），
+    // 与 batch 抠图/检测使用的 g_camera_roi 保持一致。
+#if USE_NVIDIA
+    if (roi_enabled && img.cols > 0 && img.rows > 0) {
+        int rw = (int)(img.cols * roi_width_ratio);
+        int rh = (int)(img.rows * roi_height_ratio);
+        if (rw >= 2 && rh >= 2) {
+            int rx = std::max(0, std::min((int)(img.cols * roi_x_ratio), img.cols - rw));
+            int ry = std::max(0, std::min((int)(img.rows * roi_y_ratio), img.rows - rh));
+            cv::Rect roi_rect(rx, ry, rw, rh);
+            roi_rect &= cv::Rect(0, 0, img.cols, img.rows);
+            cv::rectangle(img, roi_rect, cv::Scalar(0, 255, 255), 2);
+        }
+    }
+#endif
 }
 
 void InferDet::publishThread() {
@@ -969,6 +1116,8 @@ void InferDet::publishThread() {
         }
 
         cv::Mat draw_img = frame.clone();
+
+        drawRoiBox(draw_img);
 
         // Draw tracker visualization
         if (draw_tracker) {

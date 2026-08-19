@@ -13,6 +13,17 @@
 
 using namespace std;
 
+// 接收时间差诊断：每相机最近一条雷达的采集时间戳(ms)，供 imgCallback 与 trackCallback 共享
+static long long s_last_radar_ms[32];
+static bool s_radar_have[32];
+
+// 每相机杆号（诊断日志用），由 infer_nodelet 在创建订阅前填充
+static std::string s_cam_pole_name[32];
+
+void setCamPoleName(int index, const std::string& pole_name) {
+    if (index >= 0 && index < 32) s_cam_pole_name[index] = pole_name;
+}
+
 void InferDet::loadParam(image_transport::Publisher _pub_img,
                          ros::Publisher _pub_tracker,
                          ros::Publisher _pub_fps,
@@ -37,6 +48,16 @@ void InferDet::loadParam(image_transport::Publisher _pub_img,
 
         LOG_INFO("Parameters loaded for %s-%s",
                 camera_type.c_str(), camera_direction.c_str());
+    }
+
+void InferDet::setRoiParams(bool _roi_enabled, float _roi_height_ratio, float _roi_width_ratio,
+                            float _roi_y_ratio, float _roi_x_ratio)
+    {
+        roi_enabled = _roi_enabled;
+        roi_height_ratio = _roi_height_ratio;
+        roi_width_ratio = _roi_width_ratio;
+        roi_y_ratio = _roi_y_ratio;
+        roi_x_ratio = _roi_x_ratio;
     }
 
 void InferDet::load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride){
@@ -312,10 +333,45 @@ void InferDet::saveTrackMontage(int track_id, int class_id,
 
 void imgCallback(const sensor_msgs::ImageConstPtr& msg, int& index){
     sensor_msgs::ImageConstPtr _msg = msg;
+#if USE_NVIDIA
+    if (g_nvidia_batch_mode) {
+        // 诊断：打印相机原始到达间隔（header.stamp），与 processResult 的 [frame-int] 对比，
+        // 区分数据源抖动 vs batch 处理重排。正常应为 ~66ms（14.5fps）。
+        static long long s_prev_img_ms[32];
+        static bool s_first[32];
+        if (index >= 0 && index < 32) {
+            long long cur_ms = (long long)msg->header.stamp.sec * 1000 + msg->header.stamp.nsec / 1000000;
+            if (!s_first[index]) {
+                s_first[index] = true;
+            } else {
+                LOG_DEBUG("[src-int] pole=%s cam=%d img_gap=%lldms", s_cam_pole_name[index].c_str(), index, cur_ms - s_prev_img_ms[index]);
+            }
+            s_prev_img_ms[index] = cur_ms;
+        }
+    }
+#endif
+    // 接收时间差诊断：图像采集时间戳 vs 最近一条雷达采集时间戳（数据源对齐诊断）。
+    // 雷达与图像频率不同，该差值会随两者相位周期性漂移；若出现持续大跳变则数据源/传输可能有问题。
+    if (index >= 0 && index < 32) {
+        static long long s_last_print_ms[32];
+        long long img_ms = (long long)msg->header.stamp.sec * 1000 + msg->header.stamp.nsec / 1000000;
+        long long now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (s_radar_have[index] && (s_last_print_ms[index] == 0 || now_ms - s_last_print_ms[index] >= 20000)) {
+            LOG_INFO("[recv-diff] pole=%s cam=%d img=%lldms radar=%lldms diff=%lldms",
+                     s_cam_pole_name[index].c_str(), index, img_ms, s_last_radar_ms[index], img_ms - s_last_radar_ms[index]);
+            s_last_print_ms[index] = now_ms;
+        }
+    }
     imgQueue[index].Produce(std::move(_msg));
 }
 
 void trackCallback(const infer_nodelet::RadarTrackObjectProject::ConstPtr msg, int& index){
     infer_nodelet::RadarTrackObjectProject::ConstPtr _msg = msg;
+    if (index >= 0 && index < 32) {
+        long long radar_ms = (long long)msg->header.stamp.sec * 1000 + msg->header.stamp.nsec / 1000000;
+        s_last_radar_ms[index] = radar_ms;
+        s_radar_have[index] = true;
+    }
     trackQueue[index].Produce(std::move(_msg));
 }

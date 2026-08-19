@@ -36,6 +36,7 @@ int RknnPipeline::preprocessAndForward(
     result.camera_ids.resize(n);
     result.img_time_secs.resize(n);
     result.img_time_nsecs.resize(n);
+    result.receive_local_ms_list.resize(n);
     result.batch_size = n;
 
     std::vector<std::thread> threads(n);
@@ -47,8 +48,9 @@ int RknnPipeline::preprocessAndForward(
         int camera_id = batch_frames[i].camera_id;
         double img_time_sec = batch_frames[i].img_time_sec;
         double img_time_nsec = batch_frames[i].img_time_nsec;
+        int64_t receive_local_ms = batch_frames[i].receive_local_ms;
 
-        threads[i] = std::thread([&det, frame, camera_id, img_time_sec, img_time_nsec, i, &result]() {
+        threads[i] = std::thread([&det, frame, camera_id, img_time_sec, img_time_nsec, receive_local_ms, i, &result]() {
             YoloV8BoxVec boxes;
             int ret = det.Detect(frame, boxes);
             if (ret != 0) return;
@@ -68,6 +70,7 @@ int RknnPipeline::preprocessAndForward(
             result.camera_ids[i] = camera_id;
             result.img_time_secs[i] = img_time_sec;
             result.img_time_nsecs[i] = img_time_nsec;
+            result.receive_local_ms_list[i] = receive_local_ms;
         });
     }
 

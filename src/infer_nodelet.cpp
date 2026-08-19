@@ -88,6 +88,12 @@ namespace infer_ns {
                                  bool save_img_flag,
                                  const std::string& write_path,
                                  int min_points_len,
+                                 bool roi_enabled,
+                                 float roi_height_ratio,
+                                 float roi_width_ratio,
+                                 float roi_y_ratio,
+                                 float roi_x_ratio,
+                                 int process_delay_print_interval,
                                  ros::NodeHandle& nh) {
             auto infer_node = std::make_shared<InferDet>();
             image_transport::ImageTransport it(nh);
@@ -108,6 +114,9 @@ namespace infer_ns {
                                   param.draw_tracker);
             infer_node->setWriteParam(byte_track_config_file, write_flag, save_img_flag,
                                      write_path, min_points_len);
+            infer_node->setRoiParams(roi_enabled, roi_height_ratio, roi_width_ratio,
+                                     roi_y_ratio, roi_x_ratio);
+            infer_node->setProcessDelayPrintInterval(process_delay_print_interval);
             bool use_shm = false;
             nh.param("use_shm", use_shm, false);
             if (use_shm) {
@@ -169,6 +178,13 @@ namespace infer_ns {
 #if USE_SOPHON || USE_RKNN
             // 使用全局共享 pipeline，不再加载独立模型
             infer_node->setCameraId(next_thread_idx);
+#elif USE_NVIDIA
+            if (g_nvidia_batch_mode) {
+                // batch 模式：使用全局共享 pipeline，不再加载独立模型
+                infer_node->setCameraId(next_thread_idx);
+            } else {
+                infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
+            }
 #else
             infer_node->load_det_model(model_paths[0],dev_id, det_class, det_stride);
 #endif
@@ -204,6 +220,11 @@ namespace infer_ns {
 #if USE_SOPHON || USE_RKNN
             std::thread(&InferDet::processResult, infer_node).detach();
             std::thread(&InferDet::publishThread, infer_node).detach();
+#elif USE_NVIDIA
+            if (g_nvidia_batch_mode) {
+                std::thread(&InferDet::processResult, infer_node).detach();
+                std::thread(&InferDet::publishThread, infer_node).detach();
+            }
 #endif
 #if (USE_SOPHON || USE_NVIDIA) && !USE_SOPHON
             std::thread(&InferDet::vehicleColor, infer_node).detach();
@@ -214,6 +235,7 @@ namespace infer_ns {
 
             // Create subscribers (only for non-video mode)
             if (param.video_path.empty()) {
+                setCamPoleName(thread_idx, param.pole_name);
                 sub_radars.emplace_back(nh.subscribe<infer_nodelet::RadarTrackObjectProject>(
                     param.receive_radar_topic, 1,
                     boost::bind(&trackCallback, _1, thread_idx)
@@ -260,6 +282,87 @@ namespace infer_ns {
             }
         }
 
+        struct CameraFilterConfig {
+            std::string pole_name;
+            std::string direction;
+            std::string focal_type;
+            bool enable = true;
+        };
+        std::vector<CameraFilterConfig> camera_filter_config;
+
+        void loadCameraFilterConfig(ros::NodeHandle& nh) {
+            XmlRpc::XmlRpcValue flt_list;
+            if (!nh.getParam("camera_filter", flt_list)) {
+                LOG_INFO("No camera_filter config found, all cameras enabled");
+                return;
+            }
+            if (flt_list.getType() != XmlRpc::XmlRpcValue::TypeArray) {
+                LOG_WARN("camera_filter must be a list");
+                return;
+            }
+            for (int i = 0; i < flt_list.size(); i++) {
+                CameraFilterConfig cfg;
+                if (flt_list[i].hasMember("pole_name"))
+                    cfg.pole_name = static_cast<std::string>(flt_list[i]["pole_name"]);
+                if (flt_list[i].hasMember("direction"))
+                    cfg.direction = static_cast<std::string>(flt_list[i]["direction"]);
+                if (flt_list[i].hasMember("focal_type"))
+                    cfg.focal_type = static_cast<std::string>(flt_list[i]["focal_type"]);
+                if (flt_list[i].hasMember("enable"))
+                    cfg.enable = static_cast<bool>(flt_list[i]["enable"]);
+                camera_filter_config.push_back(cfg);
+                LOG_INFO("Camera filter config: %s-%s-%s enable=%d",
+                         cfg.pole_name.c_str(), cfg.direction.c_str(), cfg.focal_type.c_str(), (int)cfg.enable);
+            }
+        }
+
+        struct CameraRoiEntry {
+            std::string pole_name;
+            std::string direction;
+            std::string focal_type;
+            bool enabled = true;
+            float height_ratio = 0.5f;
+            float width_ratio = 0.5f;
+            float y_ratio = 0.0f;
+            float x_ratio = 0.5f;
+        };
+        std::vector<CameraRoiEntry> camera_roi_config;
+
+        void loadCameraRoiConfig(ros::NodeHandle& nh) {
+            XmlRpc::XmlRpcValue roi_list;
+            if (!nh.getParam("camera_roi", roi_list)) {
+                LOG_INFO("No camera_roi config found, all cameras use global ROI");
+                return;
+            }
+            if (roi_list.getType() != XmlRpc::XmlRpcValue::TypeArray) {
+                LOG_WARN("camera_roi must be a list");
+                return;
+            }
+            for (int i = 0; i < roi_list.size(); i++) {
+                CameraRoiEntry e;
+                if (roi_list[i].hasMember("pole_name"))
+                    e.pole_name = static_cast<std::string>(roi_list[i]["pole_name"]);
+                if (roi_list[i].hasMember("direction"))
+                    e.direction = static_cast<std::string>(roi_list[i]["direction"]);
+                if (roi_list[i].hasMember("focal_type"))
+                    e.focal_type = static_cast<std::string>(roi_list[i]["focal_type"]);
+                if (roi_list[i].hasMember("enabled"))
+                    e.enabled = static_cast<bool>(roi_list[i]["enabled"]);
+                if (roi_list[i].hasMember("height_ratio"))
+                    e.height_ratio = static_cast<double>(roi_list[i]["height_ratio"]);
+                if (roi_list[i].hasMember("width_ratio"))
+                    e.width_ratio = static_cast<double>(roi_list[i]["width_ratio"]);
+                if (roi_list[i].hasMember("y_ratio"))
+                    e.y_ratio = static_cast<double>(roi_list[i]["y_ratio"]);
+                if (roi_list[i].hasMember("x_ratio"))
+                    e.x_ratio = static_cast<double>(roi_list[i]["x_ratio"]);
+                camera_roi_config.push_back(e);
+                LOG_INFO("Camera ROI config: %s-%s-%s enabled=%d h=%.2f w=%.2f y=%.2f x=%.2f",
+                         e.pole_name.c_str(), e.direction.c_str(), e.focal_type.c_str(),
+                         (int)e.enabled, e.height_ratio, e.width_ratio, e.y_ratio, e.x_ratio);
+            }
+        }
+
         virtual void onInit() override {
             NODELET_INFO("Infer initialized");
             auto private_nh = getMTPrivateNodeHandle();
@@ -275,10 +378,26 @@ namespace infer_ns {
                 LOG_COUT("MEC Version: " << cfg.meta.version);
 
                 loadCameraVisualConfig(private_nh);
+                loadCameraFilterConfig(private_nh);
+                loadCameraRoiConfig(private_nh);
                 for (const auto& pole : cfg.mec_info.poles) {
                     LOG_INFO("Pole: %s (index:%d)", pole.pole_name.c_str(), pole.pole_index);
                     for (const auto& cam : pole.cameras) {
                         LOG_INFO("  Camera: %s-%s", cam.direction.c_str(), cam.focal_type.c_str());
+                        // 按 camera_filter 过滤：enable=false 的相机直接跳过，不创建推理线程/占用 batch 槽位
+                        bool filtered_out = false;
+                        for (const auto& flt : camera_filter_config) {
+                            if (flt.pole_name == pole.pole_name &&
+                                flt.direction == cam.direction &&
+                                flt.focal_type == cam.focal_type &&
+                                !flt.enable) {
+                                LOG_INFO("  Camera %s-%s-%s filtered out (disabled)",
+                                         pole.pole_name.c_str(), cam.direction.c_str(), cam.focal_type.c_str());
+                                filtered_out = true;
+                                break;
+                            }
+                        }
+                        if (filtered_out) continue;
                         InferParam p = createTopicParams(cam, pole.pole_name);
                         // Default: no visualization (performance mode)
                         p.publish_img = false;
@@ -335,6 +454,60 @@ namespace infer_ns {
             private_nh.param("write_flag", write_flag, write_flag);
             private_nh.param("save_img_flag", save_img_flag, save_img_flag);
 
+            bool roi_enabled = true;
+            float roi_height_ratio = 0.5f;
+            float roi_width_ratio = 0.5f;
+            float nms_iou_threshold = 0.5f;
+            private_nh.param("roi_enabled", roi_enabled, roi_enabled);
+            private_nh.param("roi_height_ratio", roi_height_ratio, roi_height_ratio);
+            private_nh.param("roi_width_ratio", roi_width_ratio, roi_width_ratio);
+            private_nh.param("nms_iou_threshold", nms_iou_threshold, nms_iou_threshold);
+
+#if USE_NVIDIA
+            // 填充 per-camera ROI 配置表（索引 = camera_id）。未被 camera_roi 显式覆盖的相机
+            // 用全局 ROI 参数 + 默认位置（y=0 顶部, x=0.5 居中）。test 模式无 pole/方向信息，走默认。
+            g_camera_roi.resize(infer_params.size());
+            for (size_t i = 0; i < infer_params.size(); i++) {
+                CameraRoiConfig rc;
+                rc.enabled = roi_enabled;
+                rc.height_ratio = roi_height_ratio;
+                rc.width_ratio = roi_width_ratio;
+                rc.y_ratio = 0.0f;
+                rc.x_ratio = 0.5f;
+                for (const auto& e : camera_roi_config) {
+                    if (e.pole_name == infer_params[i].pole_name &&
+                        e.direction == infer_params[i].camera_direction &&
+                        e.focal_type == infer_params[i].camera_type) {
+                        rc.has_cfg = true;
+                        rc.enabled = e.enabled;
+                        rc.height_ratio = e.height_ratio;
+                        rc.width_ratio = e.width_ratio;
+                        rc.y_ratio = e.y_ratio;
+                        rc.x_ratio = e.x_ratio;
+                        break;
+                    }
+                }
+                g_camera_roi[i] = rc;
+                LOG_INFO("Camera[%zu] ROI %s-%s-%s: cfg=%d enabled=%d h=%.2f w=%.2f y=%.2f x=%.2f",
+                         i, infer_params[i].pole_name.c_str(),
+                         infer_params[i].camera_direction.c_str(), infer_params[i].camera_type.c_str(),
+                         (int)rc.has_cfg, (int)rc.enabled, rc.height_ratio, rc.width_ratio, rc.y_ratio, rc.x_ratio);
+            }
+#endif
+
+            int process_delay_print_interval = 10;
+            private_nh.param("process_delay_print_interval", process_delay_print_interval, process_delay_print_interval);
+
+            // 批填充目标 max_full：-1 = 未配置，自动取实际启用相机数（infer_params.size()）
+            int max_full = -1;
+            private_nh.param("max_full", max_full, -1);
+
+            // ROI 调试：保存裁剪的 ROI 图与带 ROI 框的原图（默认关，仅 batch 模式 ROI 启用时生效）
+            bool roi_save_debug = false;
+            private_nh.param("roi_save_debug", roi_save_debug, false);
+            g_roi_save_debug = roi_save_debug;
+            g_roi_save_path = write_path + "/roi_debug";
+
             XmlRpc::XmlRpcValue params;
             private_nh.getParam("model", params);
 
@@ -379,6 +552,10 @@ namespace infer_ns {
                 num_devices = 1;
             }
             if (num_devices == 0) num_devices = 1;
+            private_nh.param("batch_mode", g_nvidia_batch_mode, false);
+            LOG_INFO("NVIDIA batch_mode=%d", (int)g_nvidia_batch_mode);
+            private_nh.param("debug_log", g_debug_log, false);
+            LOG_INFO("debug_log=%d", (int)g_debug_log);
 #else
             int num_devices = 1;
 #endif
@@ -395,6 +572,11 @@ namespace infer_ns {
             // 初始化结果队列（每个相机一个）
             g_result_queues.resize(infer_params.size());
             g_cam_frame_queues.resize(infer_params.size());
+#if USE_NVIDIA
+            g_frame_cnt_input.assign(infer_params.size(), 0);
+            g_frame_cnt_pre.assign(infer_params.size(), 0);
+            g_frame_cnt_post.assign(infer_params.size(), 0);
+#endif
             g_color_result_queues.resize(infer_params.size());
             g_abandon_result_queues.resize(infer_params.size());
 
@@ -407,7 +589,8 @@ namespace infer_ns {
             LOG_INFO("Global abandon model initialized: %s", model_paths[3].c_str());
 
             // 启动全局三段式流水线线程 + 共享 worker
-            std::thread(batch_preprocess_thread, batch_size).detach();
+            int effective_max_full = (max_full > 0) ? max_full : (int)infer_params.size();
+            std::thread(batch_preprocess_thread, batch_size, effective_max_full).detach();
             std::thread(batch_postprocess_thread).detach();
             std::thread(color_infer_thread).detach();
             std::thread(abandon_infer_thread).detach();
@@ -433,6 +616,39 @@ namespace infer_ns {
                 std::thread(rknn_infer_thread, core).detach();
             }
             // 结果由 processResult 线程异步消费
+#elif USE_NVIDIA
+            if (g_nvidia_batch_mode) {
+                // 创建全局共享的 NVIDIA batch pipeline
+                int det_class = 10;
+                if (params.size() > 0 && params[0].hasMember("det_class"))
+                    det_class = params[0]["det_class"];
+                auto nvidia_pipeline = std::make_unique<NvidiaPipeline>();
+                nvidia_pipeline->setNumLabels(det_class);
+                nvidia_pipeline->setRoiEnabled(roi_enabled);
+                nvidia_pipeline->setRoiHeightRatio(roi_height_ratio);
+                nvidia_pipeline->setRoiWidthRatio(roi_width_ratio);
+                nvidia_pipeline->setNmsIou(nms_iou_threshold);
+                nvidia_pipeline->init(model_paths[0]);
+                g_pipeline = std::move(nvidia_pipeline);
+                int batch_size = g_pipeline->getBatchSize();
+                LOG_INFO("Global NVIDIA batch pipeline initialized, batch_size=%d det_class=%d roi=%d roi_ratio=%.2f/%.2f nms_iou=%.2f",
+                         batch_size, det_class, (int)roi_enabled, roi_height_ratio, roi_width_ratio, nms_iou_threshold);
+
+                // 初始化结果队列（每个相机一个）
+                g_result_queues.resize(infer_params.size());
+                g_cam_frame_queues.resize(infer_params.size());
+#if USE_NVIDIA
+                g_frame_cnt_input.assign(infer_params.size(), 0);
+                g_frame_cnt_pre.assign(infer_params.size(), 0);
+                g_frame_cnt_post.assign(infer_params.size(), 0);
+#endif
+
+                // 启动全局三段式流水线线程
+                // max_full：未配置(-1)时自动取实际启用相机数；已配置则用配置值（batch_pre 内做安全上限钳制）
+                int effective_max_full = (max_full > 0) ? max_full : (int)infer_params.size();
+                std::thread(batch_preprocess_thread, batch_size, effective_max_full).detach();
+                std::thread(batch_postprocess_thread).detach();
+            }
 #endif
 
             // Start inference threads -------------------------------------------
@@ -458,9 +674,26 @@ namespace infer_ns {
                 LOG_INFO("Camera[%zu] -> MLU device %d (det_class=%d det_stride=%d abandon_class=%d abandon_stride=%d)",
                          infer_index, dev_id, det_class, det_stride, abandon_class, abandon_stride);
 
+                // per-camera ROI：优先用 camera_roi 覆盖值（g_camera_roi），否则回退全局值，保证画框与 batch 抠图/检测一致
+                bool cam_roi_enabled = roi_enabled;
+                float cam_roi_h = roi_height_ratio;
+                float cam_roi_w = roi_width_ratio;
+                float cam_roi_y = 0.0f;
+                float cam_roi_x = 0.5f;
+#if USE_NVIDIA
+                if (infer_index < g_camera_roi.size()) {
+                    const CameraRoiConfig& rc = g_camera_roi[infer_index];
+                    cam_roi_enabled = rc.enabled;
+                    cam_roi_h = rc.height_ratio;
+                    cam_roi_w = rc.width_ratio;
+                    cam_roi_y = rc.y_ratio;
+                    cam_roi_x = rc.x_ratio;
+                }
+#endif
                 startInferenceThread(infer_params[infer_index], model_paths,dev_id, det_class,det_stride,abandon_class,abandon_stride ,abandon_rate,
                                     vechile_color_rate, byte_track_config_file,
-                                    write_flag, save_img_flag, write_path, min_points_len, private_nh);
+                                    write_flag, save_img_flag, write_path, min_points_len,
+                                    cam_roi_enabled, cam_roi_h, cam_roi_w, cam_roi_y, cam_roi_x, process_delay_print_interval, private_nh);
             }
         }
     };
