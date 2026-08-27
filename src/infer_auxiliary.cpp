@@ -60,6 +60,15 @@ void InferDet::setRoiParams(bool _roi_enabled, float _roi_height_ratio, float _r
         roi_x_ratio = _roi_x_ratio;
     }
 
+void InferDet::setDetectThresholds(float conf_threshold, float nms_threshold)
+    {
+#if !USE_SOPHON && !USE_RKNN
+        detector.setThresholds(conf_threshold, nms_threshold);
+#else
+        (void)conf_threshold; (void)nms_threshold;
+#endif
+    }
+
 void InferDet::load_det_model(std::string model_path, int mlu_infer_device, int num_class, int stride){
 #if !USE_SOPHON && !USE_RKNN
     LOG_INFO("Loding... DETRECTOR Model %s", model_path.c_str());

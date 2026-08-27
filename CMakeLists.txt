@@ -189,6 +189,7 @@ list(REMOVE_ITEM sophon_srcs
 
 if(USE_CAMBRICON)
     add_library(infer_nodelet ${CN_TOOLS_DIR}/check.cpp ${CN_TOOLS_DIR}/Timer.cpp ${CN_INFERENCE_DIR}/Net.cc ${native_srcs} ${cambricon_srcs})
+    add_dependencies(infer_nodelet ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
     target_link_libraries(infer_nodelet ${catkin_LIBRARIES})
     target_link_libraries(infer_nodelet cv_bridge)
     target_link_libraries(infer_nodelet ${cambricon} ${opencv} ${SHM_LIBS} pthread avformat avcodec avutil swscale jsoncpp)
@@ -285,6 +286,13 @@ install(TARGETS  infer_nodelet
 install(FILES nodelet_plugins.xml package.xml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+
+if(USE_RKNN)
+install(FILES infer_mlu_lib/3rd/rknn/librknnrt.so infer_mlu_lib/3rd/rknn/librknn_api.so
+  DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+)
+endif()
 
 if(USE_CAMBRICON)
 install(FILES infer_mlu_lib/3rd/neuware/lib64/libcnrt.so infer_mlu_lib/3rd/neuware/lib64/libcndrv.so

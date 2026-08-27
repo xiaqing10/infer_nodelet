@@ -282,7 +282,7 @@ int YoloV8_det::Detect(const cv::Mat& image, YoloV8BoxVec& boxes, int index)
     cv::Size size = cv::Size{640, 640};
     copy_from_Mat(image, size);
     infer();
-    postprocess(boxes);
+    postprocess(boxes, score_thres_, iou_thres_, topk_);
 
     return 0;
 }

@@ -126,10 +126,11 @@ inline std::vector<CameraRoiConfig> g_camera_roi;
 inline std::vector<long long> g_frame_cnt_input;
 inline std::vector<long long> g_frame_cnt_pre;
 inline std::vector<long long> g_frame_cnt_post;
-// ROI 调试：保存裁剪的 ROI 图与带 ROI 框的原图（仅 batch 模式 ROI 启用时使用）
+#endif
+
+// ROI 调试：保存裁剪的 ROI 图与带 ROI 框的原图（各平台共用，infer_nodelet.cpp onInit 统一赋值；仅 batch 模式 ROI 启用时生效）
 inline bool g_roi_save_debug = false;
 inline std::string g_roi_save_path = "/tmp/";
-#endif
 
 #if USE_SOPHON
 // 全局共享的颜色分类与抛洒物模型（每路不再各自加载一份）
@@ -167,7 +168,16 @@ public:
     void setShmParam(const std::string& shm_name);
     void setRoiParams(bool roi_enabled, float roi_height_ratio, float roi_width_ratio,
                       float roi_y_ratio, float roi_x_ratio);
+    void setDetectThresholds(float conf_threshold, float nms_threshold);
     void setProcessDelayPrintInterval(int interval_sec) { if (interval_sec > 0) process_delay_print_interval = interval_sec; }
+
+    // 本地保存发布带框图像（离线调试用，网络差无法实时看发布图像时）
+    void setSavePubImg(bool enable, int interval_sec) { save_pub_img = enable; save_pub_interval = (interval_sec > 0) ? interval_sec : 5; }
+    void savePubImg(const cv::Mat& img);
+
+    // 本地保存"原始检测结果"图像（跟踪前，直接画检测层框，供验证 ROI 检测有效性）
+    void setSaveDetImg(bool enable, int interval_sec) { save_det_img = enable; save_pub_interval = (interval_sec > 0) ? interval_sec : 5; }
+    void saveDetImg(const cv::Mat& img, const std::vector<DetectorRetData>& dets);
 
     void setCameraId(int id) { camera_id_ = id; }
     int getCameraId() const { return camera_id_; }
@@ -175,6 +185,8 @@ public:
     int processRadarCamera(int index);
     // 在图像上绘制 ROI 增强检测区域框（batch / 非 batch 路径共用）
     void drawRoiBox(cv::Mat& img);
+    // 计算当前相机的 ROI 检测区域矩形（与 drawRoiBox 一致，供颜色判定复用）
+    cv::Rect getRoiRect(const cv::Mat& img);
 #if USE_SOPHON || USE_RKNN || USE_NVIDIA
     void processResult();
     void publishThread();
@@ -229,6 +241,14 @@ private:
     bool write_flag = false;
     bool save_img_flag = false;
     std::string write_path = "/tmp/";
+    // 本地保存发布带框图像（离线调试）
+    bool save_pub_img = false;
+    int save_pub_interval = 5;
+    std::string pub_img_dir;
+    std::chrono::steady_clock::time_point last_pub_save_ts;
+    bool save_det_img = false;
+    std::string det_img_dir;
+    std::chrono::steady_clock::time_point last_det_save_ts;
     std::string byte_track_config_file;
     bool publish_img = true;
     bool draw_tracker = true;

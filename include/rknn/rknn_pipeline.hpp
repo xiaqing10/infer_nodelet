@@ -19,6 +19,10 @@ public:
     int postProcess(InferResult& result) override;
     int getBatchSize() const override { return RKNN_NUM_CORES; }
 
+    void setDetectThresholds(float conf, float nms) override {
+        for (auto& d : detectors_) { d.m_confThreshold = conf; d.m_nmsThreshold = nms; }
+    }
+
     YoloV8_det& getDetector(int core_id) { return detectors_[core_id]; }
 
 private:

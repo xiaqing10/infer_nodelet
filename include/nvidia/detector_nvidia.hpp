@@ -120,6 +120,7 @@ public:
     ~YoloV8_det();
 
     int Init(const std::string& engine_file_path, int num_labels = 10);
+    void setDetectThresholds(float conf, float nms) { score_thres_ = conf; iou_thres_ = nms; }
     int Detect(const cv::Mat& image, YoloV8BoxVec& boxes, int index = 0);
     void draw_result(cv::Mat& img, YoloV8BoxVec& result);
 
@@ -154,6 +155,10 @@ private:
     std::vector<void*> device_ptrs;
 
     int model_num_labels = 10;
+
+    float score_thres_ = 0.25f;  // 检测置信度阈值（单帧 Detect 路径使用）
+    float iou_thres_ = 0.65f;    // 检测 NMS IoU 阈值（单帧 Detect 路径使用）
+    int topk_ = 100;
 
     PreParam pparam;
 

@@ -150,6 +150,8 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
       int class_id = objects[i].label;
 
       STrack strack(STrack::tlbr_to_tlwh(tlbr_), score, class_id);
+      strack.both_roi = objects[i].both_roi;
+      strack.from_roi = objects[i].from_roi;
       if (score >= track_thresh) {
         detections.push_back(strack);
       } else {
@@ -232,6 +234,8 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
     }
 
     track->det_box = det->tlwh;
+    track->both_roi = det->both_roi;
+    track->from_roi = det->from_roi;
     // ========== 修复类别更新逻辑 ==========
     if (!track->class_lock) {
         bool should_update = false;
@@ -326,6 +330,8 @@ vector<STrack> BYTETracker::update(const vector<DetectorRetData>& objects) {
     }
 
     track->det_box = det->tlwh;
+    track->both_roi = det->both_roi;
+    track->from_roi = det->from_roi;
     if (!track->class_lock) {
         bool should_update = false;
 

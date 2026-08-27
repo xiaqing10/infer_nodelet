@@ -93,7 +93,12 @@ namespace infer_ns {
                                  float roi_width_ratio,
                                  float roi_y_ratio,
                                  float roi_x_ratio,
+                                 float conf_threshold,
+                                 float nms_threshold,
                                  int process_delay_print_interval,
+                                 bool save_pub_img,
+                                 int save_pub_interval,
+                                 bool save_det_img,
                                  ros::NodeHandle& nh) {
             auto infer_node = std::make_shared<InferDet>();
             image_transport::ImageTransport it(nh);
@@ -114,8 +119,11 @@ namespace infer_ns {
                                   param.draw_tracker);
             infer_node->setWriteParam(byte_track_config_file, write_flag, save_img_flag,
                                      write_path, min_points_len);
+            infer_node->setSavePubImg(save_pub_img, save_pub_interval);
+            infer_node->setSaveDetImg(save_det_img, save_pub_interval);
             infer_node->setRoiParams(roi_enabled, roi_height_ratio, roi_width_ratio,
                                      roi_y_ratio, roi_x_ratio);
+            infer_node->setDetectThresholds(conf_threshold, nms_threshold);
             infer_node->setProcessDelayPrintInterval(process_delay_print_interval);
             bool use_shm = false;
             nh.param("use_shm", use_shm, false);
@@ -454,24 +462,47 @@ namespace infer_ns {
             private_nh.param("write_flag", write_flag, write_flag);
             private_nh.param("save_img_flag", save_img_flag, save_img_flag);
 
-            bool roi_enabled = true;
-            float roi_height_ratio = 0.5f;
-            float roi_width_ratio = 0.5f;
+            // 本地保存发布带框图像（离线调试，默认关），save_pub_interval 秒每相机一帧
+            bool save_pub_img = false;
+            int save_pub_interval = 5;
+            private_nh.param("save_pub_img", save_pub_img, save_pub_img);
+            private_nh.param("save_pub_interval", save_pub_interval, save_pub_interval);
+
+            // 本地保存原始检测结果图（跟踪前，验证 ROI 检测有效性，默认关）
+            bool save_det_img = false;
+            private_nh.param("save_det_img", save_det_img, save_det_img);
+
+            // ROI 完全按相机单独配置（camera_roi），无全局 ROI 开关/比例
             float nms_iou_threshold = 0.5f;
-            private_nh.param("roi_enabled", roi_enabled, roi_enabled);
-            private_nh.param("roi_height_ratio", roi_height_ratio, roi_height_ratio);
-            private_nh.param("roi_width_ratio", roi_width_ratio, roi_width_ratio);
             private_nh.param("nms_iou_threshold", nms_iou_threshold, nms_iou_threshold);
 
+            // 检测置信度阈值与检测器 NMS IoU 阈值（默认 = 各平台检测器硬编码值）
 #if USE_NVIDIA
-            // 填充 per-camera ROI 配置表（索引 = camera_id）。未被 camera_roi 显式覆盖的相机
-            // 用全局 ROI 参数 + 默认位置（y=0 顶部, x=0.5 居中）。test 模式无 pole/方向信息，走默认。
+            float conf_threshold = 0.25f;
+            float nms_threshold = 0.65f;
+#elif USE_SOPHON || USE_RKNN || USE_ASCEND
+            float conf_threshold = 0.35f;
+            float nms_threshold = 0.45f;
+#elif USE_CAMBRICON
+            float conf_threshold = 0.25f;
+            float nms_threshold = 0.5f;
+#else
+            float conf_threshold = 0.25f;
+            float nms_threshold = 0.45f;
+#endif
+            private_nh.param("conf_threshold", conf_threshold, conf_threshold);
+            private_nh.param("nms_threshold", nms_threshold, nms_threshold);
+
+#if USE_NVIDIA
+            // 填充 per-camera ROI 配置表（索引 = camera_id）。ROI 完全按相机单独配置，
+            // 未被 camera_roi 显式匹配的相机默认关闭 ROI（enabled=false），无全局 ROI。
             g_camera_roi.resize(infer_params.size());
+            bool roi_active = false;
             for (size_t i = 0; i < infer_params.size(); i++) {
                 CameraRoiConfig rc;
-                rc.enabled = roi_enabled;
-                rc.height_ratio = roi_height_ratio;
-                rc.width_ratio = roi_width_ratio;
+                rc.enabled = false;              // 未匹配相机默认关闭 ROI
+                rc.height_ratio = 0.5f;
+                rc.width_ratio = 0.5f;
                 rc.y_ratio = 0.0f;
                 rc.x_ratio = 0.5f;
                 for (const auto& e : camera_roi_config) {
@@ -487,6 +518,7 @@ namespace infer_ns {
                         break;
                     }
                 }
+                if (rc.enabled) roi_active = true;
                 g_camera_roi[i] = rc;
                 LOG_INFO("Camera[%zu] ROI %s-%s-%s: cfg=%d enabled=%d h=%.2f w=%.2f y=%.2f x=%.2f",
                          i, infer_params[i].pole_name.c_str(),
@@ -565,9 +597,11 @@ namespace infer_ns {
 #if USE_SOPHON
             // 创建全局共享的 Sophon pipeline
             g_pipeline = std::make_unique<SophonPipeline>();
+            g_pipeline->setDetectThresholds(conf_threshold, nms_threshold);
             g_pipeline->init(model_paths[0]);
             int batch_size = g_pipeline->getBatchSize();
-            LOG_INFO("Global Sophon pipeline initialized, batch_size=%d", batch_size);
+            LOG_INFO("Global Sophon pipeline initialized, batch_size=%d conf=%.2f nms=%.2f",
+                     batch_size, conf_threshold, nms_threshold);
 
             // 初始化结果队列（每个相机一个）
             g_result_queues.resize(infer_params.size());
@@ -601,11 +635,12 @@ namespace infer_ns {
                 det_model_type = std::string(params[0]["det_model_type"]);
             }
             auto rknn_pipeline = std::make_unique<RknnPipeline>();
+            rknn_pipeline->setDetectThresholds(conf_threshold, nms_threshold);
             rknn_pipeline->init(model_paths[0], det_model_type);
             g_pipeline = std::move(rknn_pipeline);
             int batch_size = g_pipeline->getBatchSize();
-            LOG_INFO("Global RKNN pipeline initialized, batch_size=%d model_type=%s",
-                     batch_size, det_model_type.c_str());
+            LOG_INFO("Global RKNN pipeline initialized, batch_size=%d model_type=%s conf=%.2f nms=%.2f",
+                     batch_size, det_model_type.c_str(), conf_threshold, nms_threshold);
 
             // 初始化结果队列（每个相机一个）
             g_result_queues.resize(infer_params.size());
@@ -624,15 +659,14 @@ namespace infer_ns {
                     det_class = params[0]["det_class"];
                 auto nvidia_pipeline = std::make_unique<NvidiaPipeline>();
                 nvidia_pipeline->setNumLabels(det_class);
-                nvidia_pipeline->setRoiEnabled(roi_enabled);
-                nvidia_pipeline->setRoiHeightRatio(roi_height_ratio);
-                nvidia_pipeline->setRoiWidthRatio(roi_width_ratio);
+                nvidia_pipeline->setRoiEnabled(roi_active);
                 nvidia_pipeline->setNmsIou(nms_iou_threshold);
+                nvidia_pipeline->setDetectThresholds(conf_threshold, nms_threshold);
                 nvidia_pipeline->init(model_paths[0]);
                 g_pipeline = std::move(nvidia_pipeline);
                 int batch_size = g_pipeline->getBatchSize();
-                LOG_INFO("Global NVIDIA batch pipeline initialized, batch_size=%d det_class=%d roi=%d roi_ratio=%.2f/%.2f nms_iou=%.2f",
-                         batch_size, det_class, (int)roi_enabled, roi_height_ratio, roi_width_ratio, nms_iou_threshold);
+                LOG_INFO("Global NVIDIA batch pipeline initialized, batch_size=%d det_class=%d roi_active=%d conf=%.2f nms=%.2f nms_iou=%.2f",
+                         batch_size, det_class, (int)roi_active, conf_threshold, nms_threshold, nms_iou_threshold);
 
                 // 初始化结果队列（每个相机一个）
                 g_result_queues.resize(infer_params.size());
@@ -674,10 +708,10 @@ namespace infer_ns {
                 LOG_INFO("Camera[%zu] -> MLU device %d (det_class=%d det_stride=%d abandon_class=%d abandon_stride=%d)",
                          infer_index, dev_id, det_class, det_stride, abandon_class, abandon_stride);
 
-                // per-camera ROI：优先用 camera_roi 覆盖值（g_camera_roi），否则回退全局值，保证画框与 batch 抠图/检测一致
-                bool cam_roi_enabled = roi_enabled;
-                float cam_roi_h = roi_height_ratio;
-                float cam_roi_w = roi_width_ratio;
+                // per-camera ROI：取 g_camera_roi 的 per-camera 配置（未匹配相机默认关），保证画框与 batch 抠图/检测一致
+                bool cam_roi_enabled = false;
+                float cam_roi_h = 0.5f;
+                float cam_roi_w = 0.5f;
                 float cam_roi_y = 0.0f;
                 float cam_roi_x = 0.5f;
 #if USE_NVIDIA
@@ -693,7 +727,7 @@ namespace infer_ns {
                 startInferenceThread(infer_params[infer_index], model_paths,dev_id, det_class,det_stride,abandon_class,abandon_stride ,abandon_rate,
                                     vechile_color_rate, byte_track_config_file,
                                     write_flag, save_img_flag, write_path, min_points_len,
-                                    cam_roi_enabled, cam_roi_h, cam_roi_w, cam_roi_y, cam_roi_x, process_delay_print_interval, private_nh);
+                                    cam_roi_enabled, cam_roi_h, cam_roi_w, cam_roi_y, cam_roi_x, conf_threshold, nms_threshold, process_delay_print_interval, save_pub_img, save_pub_interval, save_det_img, private_nh);
             }
         }
     };

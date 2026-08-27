@@ -7,6 +7,9 @@ det_engine_name: /home/files/rvf/share/infer_nodelet/model/kezhu-det-4b.bmodel
 color_engine_name: /home/files/rvf/share/infer_nodelet/model/resnet18_int8_20241219.bmodel
 #color_engine_name: /home/files/rvf/share/infer_nodelet/model/ls-resnet18.bmodel
 abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/cons_spill_all.bmodel
+# 检测置信度阈值（过滤得分低于该值的框）与检测器 NMS IoU 阈值
+conf_threshold: 0.35
+nms_threshold: 0.45
 vechile_color_rate: 15
 abandon_rate: 15
 min_points_len: 40

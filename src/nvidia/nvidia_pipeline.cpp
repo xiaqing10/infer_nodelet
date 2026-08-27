@@ -3,6 +3,7 @@
 #include "log_macros.h"
 #include <chrono>
 #include <algorithm>
+#include <unordered_map>
 
 int NvidiaPipeline::init(const std::string& model_path) {
     return detector_.Init(model_path, num_labels_);
@@ -27,7 +28,7 @@ std::vector<DetectorRetData> nmsMerge(const std::vector<DetectorRetData>& dets, 
     for (size_t oi = 0; oi < order.size(); oi++) {
         int i = order[oi];
         if (suppressed[i]) continue;
-        result.push_back(dets[i]);
+        DetectorRetData kept = dets[i];
         for (size_t oj = oi + 1; oj < order.size(); oj++) {
             int j = order[oj];
             if (suppressed[j]) continue;
@@ -41,8 +42,13 @@ std::vector<DetectorRetData> nmsMerge(const std::vector<DetectorRetData>& dets, 
             float aarea = (float)((a.xmax - a.xmin) * (a.ymax - a.ymin));
             float barea = (float)((b.xmax - b.xmin) * (b.ymax - b.ymin));
             float iou = inter / (aarea + barea - inter + 1e-6f);
-            if (iou > iou_thres) suppressed[j] = true;
+            if (iou > iou_thres) {
+                suppressed[j] = true;
+                // 同目标同时被全图和 ROI 检测到：跨来源重叠时标记 both_roi
+                if (a.from_roi != b.from_roi) kept.both_roi = true;
+            }
         }
+        result.push_back(kept);
     }
     return result;
 }
@@ -149,7 +155,8 @@ int NvidiaPipeline::postProcess(InferResult& result) {
     int n = result.batch_size;
     std::vector<YoloV8BoxVec> boxes;
     auto t_post = std::chrono::steady_clock::now();
-    int ret = detector_.post_process(result.nvidia_pparams, result.nvidia_output, boxes);
+    int ret = detector_.post_process(result.nvidia_pparams, result.nvidia_output, boxes,
+                                     conf_threshold_, nms_threshold_);
     if (ret != 0) {
         LOG_ERROR("[nvidia] post_process failed");
         return ret;
@@ -188,6 +195,37 @@ int NvidiaPipeline::postProcess(InferResult& result) {
         }
     }
 
+    // 诊断：ROI 放大槽位检测数量统计（按相机累加，每 50 batch 打印一次）。
+    // 判定：det_total≈0 且 empty 占比高 => ROI 放大图零检出（需查 ROI 推理链）；
+    //       det_total>0 但无绿色框 => ROI 有检出但全被 nmsMerge 抑制（完整帧已检出同目标，属正常）。
+    {
+        static std::unordered_map<int, long long> roi_slot_cnt;      // 每相机 ROI 槽位数
+        static std::unordered_map<int, long long> roi_empty_cnt;     // 每相机零检出 ROI 槽位数
+        static std::unordered_map<int, long long> roi_det_cnt;       // 每相机 ROI 检出框数合计
+        static long long roi_batch_cnt = 0;
+        for (int i = 0; i < n; i++) {
+            if (result.roi_parent_slots[i] >= 0) {
+                int cid = result.camera_ids[i];
+                roi_slot_cnt[cid]++;
+                roi_det_cnt[cid] += (long long)slot_dets[i].size();
+                if (slot_dets[i].empty()) roi_empty_cnt[cid]++;
+            }
+        }
+        if (++roi_batch_cnt % 50 == 0) {
+            for (auto& kv : roi_slot_cnt) {
+                int cid = kv.first;
+                long long slots = kv.second;
+                long long dets = roi_det_cnt[cid];
+                long long empty = roi_empty_cnt[cid];
+                LOG_INFO("[roi-detect] cam=%d roi_slots=%lld empty=%lld det_total=%lld avg_per_roi=%.2f",
+                         cid, slots, empty, dets, slots ? (double)dets / slots : 0.0);
+            }
+            roi_slot_cnt.clear();
+            roi_empty_cnt.clear();
+            roi_det_cnt.clear();
+        }
+    }
+
     // 合并：完整帧槽位作为基准，ROI 槽位坐标映射回原图后并入所属相机
     result.detections.assign(n, std::vector<DetectorRetData>());
     // 原图坐标下的最终检测（按相机），用于合并后的 NMS 去重
@@ -211,11 +249,36 @@ int NvidiaPipeline::postProcess(InferResult& result) {
         }
     }
 
-    // 对每个相机做 NMS 去重（主图 + ROI 结果合并后）
+    // 对每个相机做 NMS 去重（主图 + ROI 结果合并后）。
+    // roi_enabled_ = 批内任一相机在 camera_roi 启用 ROI（roi_active），
+    // 任一相机激活即执行合并；未生成 ROI 槽位的相机 cam_dets 仅含完整帧框，nmsMerge 等效无操作。
     if (roi_enabled_) {
         for (int i = 0; i < n; i++) {
             if (result.roi_parent_slots[i] >= 0) continue;  // 只对完整帧做
             result.detections[i] = nmsMerge(cam_dets[i], nms_iou_threshold_);
+        }
+    }
+
+    // 诊断：NMS 合并后仍存活的 ROI-only 框（from_roi=true）计数（即最终会被画成绿色的框）。
+    // 判定：≈0 => ROI 检出全被完整帧框抑制（绿色框本不该出现，属正常）；
+    //       >0  => 本应有绿色框，需查画绿框环节为何未显示。
+    {
+        static std::unordered_map<int, long long> survive_cnt;   // 每相机存活 ROI-only 框数
+        static long long survive_batch_cnt = 0;
+        for (int i = 0; i < n; i++) {
+            if (result.roi_parent_slots[i] >= 0) continue;       // 只统计完整帧的合并结果
+            int cid = result.camera_ids[i];
+            long long cnt = 0;
+            for (const auto& d : result.detections[i]) {
+                if (d.from_roi) cnt++;
+            }
+            survive_cnt[cid] += cnt;
+        }
+        if (++survive_batch_cnt % 50 == 0) {
+            for (auto& kv : survive_cnt) {
+                LOG_INFO("[roi-survive] cam=%d roi_only_survived=%lld", kv.first, kv.second);
+            }
+            survive_cnt.clear();
         }
     }
 

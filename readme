@@ -1,16 +1,6 @@
 # infer_nodelet
 
 
-## v2.2.1 - 平台解绑，适用多个平台。目前是有cambricon & sophon, nvidia , ascend
-
-## v2.0.0 - 平台解绑，适用多个平台。目前是有cambricon & sophon。
-### 编译改两个文件，一个是cmakelist 一个是deb版本号
-
-
-## v1.0.6 - 推理后端解耦 & 交通事件分析 & 日志优化
-
-### 新增功能
-
 #### 1. 推理后端解耦 (IDetector 接口)
 - 新增 `include/i_detector.h`：纯虚接口 `IDetector`，定义 `init()` / `detect()` / `destroy()` 标准接口
 - 新增 `include/cambricon_detector.h` + `src/cambricon_detector.cpp`：`CambriconDetector` 继承 `IDetector`，封装寒武纪 MLU 推理
@@ -135,43 +125,14 @@ catkin_make --only-pkg-with-deps infer_nodelet
 catkin_make install   # 生成 deb 包
 ```
 
-### 依赖
-- ROS Noetic
-- 寒武纪 MLU (CNRT 4.7.12)
-- FFmpeg (libavformat, libavcodec, libavutil, libswscale)
-- OpenCV 3.4 (捆绑, 仅 core/imgproc/highgui/imgcodecs)
-- ByteTrack (内置)
-
-### 项目结构
-```
-include/
-├── bytetrack.h           # ByteTrack 跟踪器
-├── i_detector.h          # 推理后端纯虚接口
-├── cambricon_detector.h  # 寒武纪 MLU 推理实现
-├── infer.h               # 主 nodelet 头文件
-├── log_macros.h          # 日志宏定义
-├── strack.h              # 跟踪轨迹结构
-├── traffic_template.h    # 交通事件数据结构
-└── utils.h               # 工具函数
-
-src/
-├── infer.cpp             # 主处理逻辑
-├── bytetrack.cpp         # ByteTrack 实现
-├── cambricon_detector.cpp # 寒武纪 MLU 推理
-├── traffic_analyzer.cpp  # 交通事件分析引擎
-├── traffic_analyzer.h    # 交通事件分析头文件
-├── ffmpeg_video_reader.h # FFmpeg 视频读取
-├── ffmpeg_video_reader.cpp
-└── strack.h              # (已删除，避免 ODR 冲突)
-```
 
 ---
 
 ## 各平台处理流程
 
-CMakeLists 通过互斥宏选择后端：`USE_CAMBRICON` / `USE_SOPHON` / `USE_ASCEND` / `USE_NVIDIA` / `USE_RKNN`（三选一必须 ON）。推理架构分两类：
+CMakeLists 通过互斥宏选择后端：`USE_CAMBRICON` / `USE_SOPHON` / `USE_ASCEND` / `USE_NVIDIA` / `USE_RKNN`（五选一必须 ON）。推理架构分两类：
 
-- **批量流水线（Sophon / RKNN）**：全局共享一个推理管线 + 共享 worker，所有路相机共用，模型只加载一次。
+- **批量流水线（Sophon / RKNN / NVIDIA ）**：全局共享一个推理管线 + 共享 worker，所有路相机共用，模型只加载一次。
 - **同步单路（NVIDIA / Cambricon / Ascend）**：每路相机独立的 `Detector`（含 `abandon_detector`），在 `processRadarCamera` 中同步推理。
 
 ### 总览
@@ -184,35 +145,71 @@ CMakeLists 通过互斥宏选择后端：`USE_CAMBRICON` / `USE_SOPHON` / `USE_A
 | Cambricon | 每路同步 | 每路独立 `Detector` | 无 | 每路跳帧 | 配置支持但无读取线程* |
 | Ascend | 每路同步 | 每路独立 `Detector` | 无 | 每路跳帧 | 配置支持但无读取线程* |
 
-> \* SHM 说明：`use_shm` 配置与 `shm_reader` 初始化对所有平台生效（`infer_auxiliary.cpp:82`）。但 SHM **读取线程**仅在 `#if USE_RKNN / #elif USE_SOPHON` 分支实现（`infer_processing.cpp:281-325`）。NVIDIA/Cambricon/Ascend 若设 `use_shm=true`，主循环会走 `usleep + continue` 空转（`infer_processing.cpp:380`）却无任何线程推入帧数据，导致没有图像。因此目前实际仅 Sophon/RKNN 支持 SHM。
+> \* SHM 说明：`use_shm` 配置与 `shm_reader` 初始化对所有平台生效（`infer_auxiliary.cpp:82`）。但 SHM **读取线程**仅在 `#if USE_RKNN / #elif USE_SOPHON / #elif USE_NVIDIA`（仅 `batch_mode=true` 时）分支实现（`infer_processing.cpp:281-380`）。Cambricon/Ascend 与 NVIDIA 同步模式若设 `use_shm=true`，主循环会走 `usleep + continue` 空转（`infer_processing.cpp:380`）却无任何线程推入帧数据，导致没有图像。因此实际支持 SHM 的平台：Sophon / RKNN / NVIDIA（批量模式）。
 
 ### Sophon (USE_SOPHON) —— 三段式全局批量流水线
 
-1. **全局模型初始化一次**（`infer_nodelet.cpp:387-404`）：`SophonPipeline`（检测）+ `RESNET g_color_model`（颜色）+ `Detector g_abandon_model`（抛洒物），所有路相机共享。
-2. **批量预处理线程** `batch_preprocess_thread`（`infer_pipeline_threads.cpp:38`）：round-robin 每路最多取 1 帧凑 batch（上限 `batch_size`）→ `preprocessAndForward`（`toBMI` → `pre_process` → `forward`，`sophon_pipeline.cpp`）→ 结果推入 `g_post_queue`。
-3. **批量后处理线程** `batch_postprocess_thread`（`infer_pipeline_threads.cpp:73`）：`postProcess` → 按 camera_id 路由到各自 `g_result_queues`。
-4. **每路 `processResult`**（`infer_processing.cpp:702`）：消费 `g_result_queues` → ByteTrack 跟踪 → 雷达投影 → 共享颜色（crop → `g_color_queue` → `color_infer_thread` → `g_color_result_queues`）→ 共享抛洒物（`g_abandon_queue` → `abandon_infer_thread`）→ 发布。
-5. **SHM 输入**：独立线程读共享内存 → 推 `g_cam_frame_queues`（`infer_processing.cpp:303`）。
+- **架构**：**强制全局批量流水线**（无每路同步、无单帧推理路径）。所有路相机共享同一批处理 pipeline，仅存在批量模式。
+- **batch 大小不可配置**：`batch_size` 从 bmodel 静态输入形状读取（`detector_sophon.cpp:510`，`dims[0]`），需重新编译 bmodel 才能改。
+1. **全局模型初始化一次**（`infer_nodelet.cpp:597-630`）：`SophonPipeline`（检测，`conf/nms` 经 `setDetectThresholds` 生效）+ `RESNET g_color_model`（颜色）+ `Detector g_abandon_model`（抛洒物），所有路相机共享；结果队列 `g_result_queues`、`g_color_result_queues`、`g_abandon_result_queues` 每路各一。
+2. **批量预处理线程** `batch_preprocess_thread`（`infer_pipeline_threads.cpp:48`）：round-robin 扫描各相机 `g_cam_frame_queues`，每路最多取 1 帧、多次扫描凑满 `max_full`（上限 `batch_size`；未配 `max_full` 时取相机数）→ `g_pipeline->preprocessAndForward`（`toBMI` → `pre_process` → `forward`，`sophon_pipeline.cpp:9`）→ 结果推入 `g_post_queue`。
+3. **批量后处理线程** `batch_postprocess_thread`（`infer_pipeline_threads.cpp:281`）：`g_pipeline->postProcess`（`sophon_pipeline.cpp:61`）→ 按 camera_id 路由到各自 `g_result_queues`。
+4. **每路 `processResult`**（`infer_processing.cpp:776`）：消费 `g_result_queues[camera_id_]` → ByteTrack 跟踪 → 雷达数据 → 颜色（`class_id>2 && area>2000` 时 crop → `g_color_queue` → 全局 `color_infer_thread` → `g_color_result_queues`）→ 抛洒物（`abandon_rate` 跳帧 → `g_abandon_queue` → 全局 `abandon_infer_thread` → `g_abandon_result_queues`）→ 发布。
+5. **SHM 输入**：独立线程读共享内存 → 推 `g_cam_frame_queues`（`infer_processing.cpp:354`）。
 
 ### RKNN (USE_RKNN) —— 全局多核并行
 
-1. **全局模型初始化一次**（`infer_nodelet.cpp:411`）：`RknnPipeline` 内含 `RKNN_NUM_CORES = 3` 个 `YoloV8_det`，绑定 3 个 NPU 核。
-2. **3 个推理线程** `rknn_infer_thread`（`infer_pipeline_threads.cpp:5`）：每核一个，消费共享 `g_infer_queue` → `det.Detect` → 路由到各自 `g_result_queues`。
-3. **每路 `processResult`**：ByteTrack / 雷达 / 抛洒物（每路 `abandonRecQueue`）/ 发布。**无颜色分类**（`infer.h` 中仅 SOPHON/NVIDIA 有 `vehicle_color_detector`）。
-4. **SHM 输入**：独立线程读共享内存 → 推 `g_infer_queue`（`infer_processing.cpp:281`）。
+- **架构**：全局 pipeline 内含 `RKNN_NUM_CORES = 3` 个 `YoloV8_det`，各绑定一个 NPU 核（`RKNN_NPU_CORE_0/1/2`，`rknn_pipeline.cpp:4-8`）。3 个推理线程共享同一输入队列并行消费。
+1. **全局模型初始化一次**（`infer_nodelet.cpp:631-653`）：`RknnPipeline`（检测，`conf/nms` 经 `setDetectThresholds` 生效，model_type 由 `det_model_type` 指定，默认 `auto`）。颜色/抛洒物模型路径不用于主检测。
+2. **3 个推理线程** `rknn_infer_thread`（`infer_pipeline_threads.cpp:14`）：每核一个，消费共享 `g_infer_queue` → `det.Detect` → 路由到各自 `g_result_queues[camera_id]`。
+3. **输入**：每路 `processRadarCamera` 同步喂帧（`infer_processing.cpp:495-507`）→ 推 `g_infer_queue` → `continue`（推理由 rknn 线程异步完成）；SHM 读取线程也推 `g_infer_queue`。
+4. **每路 `processResult`**（`infer_processing.cpp:776`）：消费 `g_result_queues` → ByteTrack / 雷达 / 抛洒物（每路 `abandonRecQueue` + 每路 `abandonDetect` 线程，同 Cambricon）/ 发布。**无颜色分类**（`infer.h` 中仅 SOPHON/NVIDIA 有 `vehicle_color_detector`）。
+5. **SHM 输入**：独立线程读共享内存 → 推 `g_infer_queue`（`infer_processing.cpp:332`）。
 
-### NVIDIA (USE_NVIDIA) —— 每路同步
+### NVIDIA (USE_NVIDIA) —— 双模式（每路同步 / 全局批量）
 
+- **架构**：基于 TensorRT（`.engine`，`YoloV8_det` 经 `nvinfer` 运行时加载，`detector_nvidia.cpp`）。支持**两种模式**，由配置 `batch_mode` 切换（`config/infer_nvidia.yaml`）。主检测/抛洒物/颜色阈值（`conf_threshold`/`nms_threshold`/`vechile_color_rate`/`abandon_rate`）均生效。
+- **ROI 放大增强（仅 NVIDIA）**：按相机在 `camera_roi` 单独配置（`enabled` + `height_ratio`/`width_ratio`/`x_ratio`/`y_ratio`），未配置的相机 ROI 关闭；`nms_iou_threshold` 用于主图+ROI 结果合并去重（`nvidia_pipeline.cpp:17`）。
+
+**模式一：每路同步（`batch_mode=false`，默认）**
 - 每路独立 `Detector detector` / `Detector abandon_detector` / `VehicleColorDetector vehicle_color_detector`（`infer.h`）。
-- `processRadarCamera` 同步流程（`infer_processing.cpp:454`）：`detector.inference(mat_receive)` → 绘制检测框 → 抛洒物（按 `abandon_rate` 跳帧 → `abandonRecQueue`）→ 雷达投影 → `bytetrack.update` → **颜色分类**（crop → `vehicleColorQueue` → `vehicleColorResultQueue`）→ 发布。
-- 有颜色分类（每路独立 worker）。
+- `processRadarCamera` 同步流程（`infer_processing.cpp:521` 以下非 batch 分支）：`detector.inference(mat_receive)` → 绘制检测框 → 抛洒物（按 `abandon_rate` 跳帧 → `abandonRecQueue` → 每路 `abandonDetect` 线程）→ 雷达投影 → `bytetrack.update` → **颜色分类**（crop → `vehicleColorQueue` → 每路 `vehicleColor` 线程）→ 发布。
+- 有颜色分类（每路独立 worker）。**无 SHM**（同步模式不启动 SHM 读取线程）。
+
+**模式二：全局批量（`batch_mode=true`，commit `405fc60` 新增）**
+- 全局 `NvidiaPipeline`（单个 `YoloV8_det` engine，所有相机共享，`infer_nodelet.cpp:654-686`）；批内可混入主图帧与 ROI 放大图槽位。
+- **三段式流水线**（同 Sophon）：
+  1. `batch_preprocess_thread`（`infer_pipeline_threads.cpp:48`）：round-robin 扫描各相机 `g_cam_frame_queues`，每路最多取 1 帧、多次扫描凑满 `max_full`（上限 `batch_size`；ROI 开时钳制 ≤ batch_size/2）→ `preprocessAndForward`（`pre_process`→`forward`→`export_batch_data`，`nvidia_pipeline.cpp:89`）
+  2. `batch_postprocess_thread`：`postProcess`（`nvidia_pipeline.cpp:152`，用随队列传递的 `nvidia_pparams`/`nvidia_output`，可并行）→ 解码 → ROI 槽位坐标映射回原图并入父相机 → `nmsMerge` 去重 → 按 camera_id 路由到 `g_result_queues`
+  3. **每路 `processResult`**（`infer_processing.cpp:776`）：消费 `g_result_queues[camera_id_]` → ByteTrack → 雷达 → 颜色（crop → `vehicleColorQueue` → 每路 `vehicleColor` 线程）→ 抛洒物（每路 `abandonRecQueue` + `abandonDetect` 线程）→ 发布（`publishThread`）
+- **SHM 输入**：batch 模式支持 SHM（`use_shm=true` 时独立线程读共享内存 → 推 `g_cam_frame_queues`，`infer_processing.cpp:359-380`）。
 
 ### Cambricon (USE_CAMBRICON) —— 每路同步
 
-- 推理实现在 `src/detector.cpp`（无独立目录）。
-- 流程同 NVIDIA 同步单路，但**无颜色分类**（无 `vehicle_color_detector`）。
+- **架构**：每路相机独立推理，不共享全局 pipeline。基于寒武纪 CNRT（`cn::Net`），实现位于 `src/detector.cpp`（`#if USE_CAMBRICON` 分支，无独立目录）。
+- **模型**：每路独立加载 `Detector detector`（主检测，`.cambricon`）+ `Detector abandon_detector`（抛洒物，`.cambricon`）。无颜色分类模型（`infer.h:212-216` 颜色仅 SOPHON/NVIDIA 有）。
+- **主流程**（`processRadarCamera`，`infer_processing.cpp:306`，`#if !USE_SOPHON && !USE_RKNN` 同步路径）：
+  1. `detector.inference(mat_receive)` **同步推理**（`infer_processing.cpp:537`），后处理含 letterbox、置信度过滤（`conf_thred`）、NMS（`nms_thred`）（`detector.cpp:79-189`）
+  2. 绘制检测框（`infer_processing.cpp:538-541`）
+  3. 抛洒物按 `abandon_rate` 跳帧（`rec_index % abandon_rate == 0`，`infer_processing.cpp:546-551`）→ `abandonRecQueue` → 独立 `abandonDetect` 线程（`infer_auxiliary.cpp:185`）过滤重叠框后 → `abandonResultQueue` → 主循环消费并入结果（`infer_processing.cpp:695-742`）
+  4. 雷达投影（`infer_processing.cpp:559-590`）
+  5. `bytetrack.update` 跟踪（`infer_processing.cpp:604`）
+  6. 发布（`infer_processing.cpp:751-757`）
+- **阈值**：主检测应用 YAML `conf_threshold` / `nms_threshold`（`infer_auxiliary.cpp:66` → `detector.cpp:13-16`）；抛洒物检测器未单独配置阈值（用默认值）。
+- **ROI**：不支持（`getRoiRect`/`drawRoiBox` 被 `#if USE_NVIDIA` 包裹）。
+- **SHM**：配置可读但**无读取线程**，`use_shm=true` 时主循环 `usleep + continue` 空转、无图像（见下方 SHM 注）。
 
-### Ascend (USE_ASCEND) —— 每路同步
+### Ascend (USE_ASCEND) —— 每路同步（双输入模式）
 
-- 推理实现在 `src/ascend/detector_ascend.cpp`。
-- 流程同 Cambricon 同步单路，**无颜色分类**。
+- **架构**：每路同步推理，基于昇腾 ACL + AclLite（DVPP），推理实现在 `src/ascend/detector_ascend.cpp`（`YoloV8_det`）。Ascend 构建同时编译**两个 nodelet**（`nodelet_plugins.xml` 均注册）：通用 `DataNodelet` 与 RTSP 专用 `DataNodeletRtsp`，二者共用 `InferDet::processRadarCamera` 推理流程，仅**输入来源**不同。
+  - **模式一（订阅 ROS 图像，同 Cambricon）**：通用 `DataNodelet`（`infer_nodelet.cpp:23`），由 `receive_img_topic` 订阅图像 → `imgCallback` → `imgQueue`。launch 默认启用此模式（`infer.launch:7`）。
+  - **模式二（RTSP 输入）**：`DataNodeletRtsp`（`infer_ascend_rtsp.cpp:33`），由 `rtsp/enabled` 开关控制（`infer_ascend_rtsp.cpp:237-242`）；每路独立 `rtspReadThread`（`infer_ascend_rtsp.cpp:179`）用 `AclLiteVideoProc` 读 RTSP 流 → DVPP 解码 + `CopyImageToLocal` → NV12→BGR → 推入 `imgQueue[thread_idx]`（`infer_ascend_rtsp.cpp:216-223`）。
+- **设备分配**：多路按 round-robin 分配到检测到的昇腾设备 `/dev/davinci*`（RTSP 模式 `infer_ascend_rtsp.cpp:281-294`；ROS 模式 `infer_nodelet.cpp:569-579`）。
+- **模型**：每路加载 `det_engine_name`（主检测，`.om`）+ `abandon_engine_name`（抛洒物，`.om`）。`color_engine_name`/`freid_engine_name` 仅读路径但**不使用** → **无颜色分类**。
+- **主流程**：`processRadarCamera`（`infer_processing.cpp:306`）同步路径：`Detector::inference` → `yolo_det.Detect` 单图推理（`detector.cpp:252`，AclLite 预处理 + ACL 推理 + NMS）→ 抛洒物按 `abandon_rate` 跳帧 → `abandonDetect` 线程 → 雷达投影 → `bytetrack.update` → 发布。
+- **阈值**（**依输入模式而异**）：
+  - **ROS 模式**（通用 `DataNodelet`）：调用 `setDetectThresholds`（`infer_nodelet.cpp:126`）→ `detector.cpp:245-247`，YAML `conf_threshold`/`nms_threshold` **生效**（默认 conf=0.35 / nms=0.45，`infer_nodelet.cpp:483-485`）。
+  - **RTSP 模式**（`DataNodeletRtsp`）：**未调用** `setDetectThresholds`，使用 `YoloV8_det` 头文件默认值 conf=0.35 / nms=0.45（`detector_ascend.hpp:90-91`），YAML 阈值**不生效**（死配置）。
+- **traffic_analyzer**：Ascend 特有支持（`infer_ascend_rtsp.cpp:117-158`、`infer_nodelet.cpp:134-178`），由 `traffic_analyzer/enabled` 启用，含模板加载 / 学习。
+- **ROI**：不支持（`getRoiRect`/`drawRoiBox` 被 `#if USE_NVIDIA` 包裹）。
+- **SHM**：落在 `#else` 分支，**无 SHM 读取线程**，同 Cambricon（见下方 SHM 注）。

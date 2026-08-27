@@ -160,6 +160,8 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
         std::vector<STrack> output_stracks = bytetrack.update(res);
 
+        cv::Rect roi_rect = getRoiRect(img_src);
+
         infer_nodelet::ImageDetectObject tracker_msg;
         infer_nodelet::ImageDetectObjectSingle single_msg;
         int objects_number = output_stracks.size();
@@ -186,6 +188,14 @@ void InferDet::processVideoFile(std::string video_path, int index) {
                 }
             }
             cv::Scalar color = vehicle_colors[bbox.vehicle_color];
+            // ROI 区域画框分类：仅 ROI(from_roi)→绿；全图+ROI(both_roi)→橙；仅全图且中心在 ROI 内→蓝
+            if (bbox.from_roi) {
+                color = cv::Scalar(0, 255, 0);
+            } else if (bbox.both_roi) {
+                color = cv::Scalar(0, 165, 255);
+            } else if (!roi_rect.empty() && roi_rect.contains(cv::Point(x0 + w / 2, y0 + h / 2))) {
+                color = cv::Scalar(255, 0, 0);
+            }
             if (bbox.state == TrackState::Lost) {
                 // Lost轨迹：虚线框 + 半透明文字
                 for (int line_x = x0; line_x < x0 + w; line_x += 8) {
@@ -270,6 +280,7 @@ void InferDet::processVideoFile(std::string video_path, int index) {
 
         if (publish_img) {
             drawRoiBox(img_src);
+            savePubImg(img_src);
             cv_bridge::CvImage brigeImg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", img_src);
             pub_img.publish(brigeImg.toImageMsg());
         }
@@ -604,6 +615,7 @@ else{
             infer_nodelet::ImageDetectObject  tracker_msg;
             infer_nodelet::ImageDetectObjectSingle  single_msg;
             int objects_number = output_stracks.size();
+            cv::Rect roi_rect = getRoiRect(img_src);
             for (auto bbox : output_stracks) {
                 int _id = bbox.track_id;
                 int x0 = max(0, (int)bbox.det_box[0]);
@@ -643,6 +655,14 @@ else{
 
                 // 单轨迹数据处理完毕封装发送数据
                 cv::Scalar color = vehicle_colors[bbox.vehicle_color];
+                // ROI 区域画框分类：仅 ROI(from_roi)→绿；全图+ROI(both_roi)→橙；仅全图且中心在 ROI 内→蓝
+                if (bbox.from_roi) {
+                    color = cv::Scalar(0, 255, 0);
+                } else if (bbox.both_roi) {
+                    color = cv::Scalar(0, 165, 255);
+                } else if (!roi_rect.empty() && roi_rect.contains(cv::Point(r.x + r.width / 2, r.y + r.height / 2))) {
+                    color = cv::Scalar(255, 0, 0);
+                }
                 if (bbox.state == TrackState::Lost) {
                     for (int line_x = r.x; line_x < r.x + r.width; line_x += 8) {
                         cv::line(img_src, cv::Point(line_x, r.y), cv::Point(std::min(line_x + 4, r.x + r.width), r.y), color, 2);
@@ -730,6 +750,7 @@ cv::Scalar color = vehicle_colors[0];
             tracker_msg.objects_number = objects_number;
             if (publish_img) {
                 drawRoiBox(img_src);
+                savePubImg(img_src);
                 cv_bridge::CvImage brigeImg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", img_src);
                 pub_img.publish(brigeImg.toImageMsg());
             }
@@ -822,18 +843,8 @@ void InferDet::processResult() {
         img_time_nsec = cr.img_time_nsec;
         receive_local_ms = cr.receive_local_ms;
 
-#if USE_NVIDIA
-        // 方案A 诊断可视化：仅由 ROI 增强检测出的框用绿色叠加，区分主图检测框。
-        if (roi_enabled) {
-            for (const auto& d : res) {
-                if (!d.from_roi) continue;
-                cv::Rect rr(d.xmin, d.ymin, d.xmax - d.xmin, d.ymax - d.ymin);
-                if (rr.width <= 0 || rr.height <= 0) continue;
-                if (rr.x < 0 || rr.y < 0 || rr.x + rr.width > img_src.cols || rr.y + rr.height > img_src.rows) continue;
-                cv::rectangle(img_src, rr, cv::Scalar(0, 255, 0), 2);
-            }
-        }
-#endif
+        // 保存原始检测结果图（跟踪前），用于验证 ROI 区域检测是否有效
+        saveDetImg(img_src, res);
 
 #if USE_NVIDIA
         {
@@ -1074,10 +1085,105 @@ void InferDet::processResult() {
     }
 }
 
-void InferDet::drawRoiBox(cv::Mat& img) {
-    // Draw ROI 增强检测区域框（配合 ROI 抠图增强，仅 NVIDIA + publish_img 时随图像输出）
-    // 尺寸与位置由 per-camera camera_roi 决定（y_ratio/x_ratio 为框左上角偏移），
-    // 与 batch 抠图/检测使用的 g_camera_roi 保持一致。
+#endif
+
+// 本地保存发布带框图像（离线调试用，网络差无法实时看发布图像时）。
+// 按时间间隔节流（save_pub_interval 秒），写 <write_path>/pub_img/，文件名含相机标识与时间戳。
+void InferDet::savePubImg(const cv::Mat& img) {
+    if (!save_pub_img) return;
+    if (img.empty()) return;
+
+    auto now = std::chrono::steady_clock::now();
+    if (last_pub_save_ts.time_since_epoch().count() != 0 &&
+        std::chrono::duration_cast<std::chrono::seconds>(now - last_pub_save_ts).count() < save_pub_interval) {
+        return;
+    }
+    last_pub_save_ts = now;
+
+    if (pub_img_dir.empty()) {
+        pub_img_dir = write_path + "/pub_img";
+    }
+    struct stat st;
+    if (stat(pub_img_dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        std::string cmd = "mkdir -p " + pub_img_dir;
+        if (system(cmd.c_str()) != 0) return;
+    }
+
+    char ts[64];
+    auto tnow = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(tnow);
+    struct tm tmv;
+    localtime_r(&tt, &tmv);
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tmv);
+
+    std::string fname = pub_img_dir + "/cam" + std::to_string(camera_id_) + "_" + pole_name + "_" +
+                        camera_type + "_" + camera_direction + "_" + ts + ".jpg";
+    cv::imwrite(fname, img);
+}
+
+// 本地保存"原始检测结果"图像（跟踪前，直接画检测层框，供验证 ROI 检测有效性）。
+// 按时间间隔节流（save_pub_interval 秒），写 <write_path>/det_img/。
+// 配色与发布画框一致：绿=仅ROI检出(from_roi)；橙=全图+ROI都检出(both_roi)；
+// 蓝=仅全图检出且中心在 ROI 内；白=仅全图检出且中心在 ROI 外。每框标注 类别+置信度。
+void InferDet::saveDetImg(const cv::Mat& img, const std::vector<DetectorRetData>& dets) {
+    if (!save_det_img) return;
+    if (img.empty()) return;
+
+    auto now = std::chrono::steady_clock::now();
+    if (last_det_save_ts.time_since_epoch().count() != 0 &&
+        std::chrono::duration_cast<std::chrono::seconds>(now - last_det_save_ts).count() < save_pub_interval) {
+        return;
+    }
+    last_det_save_ts = now;
+
+    if (det_img_dir.empty()) {
+        det_img_dir = write_path + "/det_img";
+    }
+    struct stat st;
+    if (stat(det_img_dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        std::string cmd = "mkdir -p " + det_img_dir;
+        if (system(cmd.c_str()) != 0) return;
+    }
+
+    cv::Mat out = img.clone();
+    drawRoiBox(out);
+    cv::Rect roi_rect = getRoiRect(out);
+    for (const auto& d : dets) {
+        cv::Rect r(d.xmin, d.ymin, d.xmax - d.xmin, d.ymax - d.ymin);
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (r.x < 0 || r.y < 0 || r.x + r.width > out.cols || r.y + r.height > out.rows) continue;
+
+        cv::Scalar color = cv::Scalar(255, 255, 255);
+        if (d.from_roi && !d.both_roi) {
+            color = cv::Scalar(0, 255, 0);        // 仅 ROI 检出
+        } else if (d.both_roi) {
+            color = cv::Scalar(0, 165, 255);      // 全图 + ROI 都检出
+        } else if (!roi_rect.empty() && roi_rect.contains(cv::Point(r.x + r.width / 2, r.y + r.height / 2))) {
+            color = cv::Scalar(255, 0, 0);        // 仅全图检出且中心在 ROI 内
+        }
+        cv::rectangle(out, r, color, 2);
+        char txt[64];
+        snprintf(txt, sizeof(txt), "cls%d %.2f", d.label, d.confidence);
+        cv::putText(out, txt, cv::Point(r.x, r.y - 4), cv::FONT_HERSHEY_PLAIN, 1.2, color, 2);
+    }
+
+    char ts[64];
+    auto tnow = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(tnow);
+    struct tm tmv;
+    localtime_r(&tt, &tmv);
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tmv);
+
+    std::string fname = det_img_dir + "/cam" + std::to_string(camera_id_) + "_" + pole_name + "_" +
+                        camera_type + "_" + camera_direction + "_" + ts + ".jpg";
+    cv::imwrite(fname, out);
+    LOG_INFO("[det-img] saved cam=%d dets=%zu -> %s", camera_id_, dets.size(), fname.c_str());
+}
+
+cv::Rect InferDet::getRoiRect(const cv::Mat& img) {
+    // 计算当前相机的 ROI 增强检测区域矩形（尺寸与位置由 per-camera camera_roi 决定，
+    // y_ratio/x_ratio 为框左上角偏移），与 batch 抠图/检测使用的 g_camera_roi 保持一致。
+    cv::Rect roi_rect;
 #if USE_NVIDIA
     if (roi_enabled && img.cols > 0 && img.rows > 0) {
         int rw = (int)(img.cols * roi_width_ratio);
@@ -1085,14 +1191,27 @@ void InferDet::drawRoiBox(cv::Mat& img) {
         if (rw >= 2 && rh >= 2) {
             int rx = std::max(0, std::min((int)(img.cols * roi_x_ratio), img.cols - rw));
             int ry = std::max(0, std::min((int)(img.rows * roi_y_ratio), img.rows - rh));
-            cv::Rect roi_rect(rx, ry, rw, rh);
+            roi_rect = cv::Rect(rx, ry, rw, rh);
             roi_rect &= cv::Rect(0, 0, img.cols, img.rows);
-            cv::rectangle(img, roi_rect, cv::Scalar(0, 255, 255), 2);
         }
+    }
+#endif
+    return roi_rect;
+}
+
+void InferDet::drawRoiBox(cv::Mat& img) {
+    // Draw ROI 增强检测区域框（配合 ROI 抠图增强，仅 NVIDIA + publish_img 时随图像输出）
+    // 尺寸与位置由 per-camera camera_roi 决定（y_ratio/x_ratio 为框左上角偏移），
+    // 与 batch 抠图/检测使用的 g_camera_roi 保持一致。
+#if USE_NVIDIA
+    cv::Rect roi_rect = getRoiRect(img);
+    if (!roi_rect.empty()) {
+        cv::rectangle(img, roi_rect, cv::Scalar(0, 255, 255), 2);
     }
 #endif
 }
 
+#if USE_SOPHON || USE_RKNN || USE_NVIDIA
 void InferDet::publishThread() {
     LOG_INFO("publishThread running...");
     while (ros::ok()) {
@@ -1118,6 +1237,7 @@ void InferDet::publishThread() {
         cv::Mat draw_img = frame.clone();
 
         drawRoiBox(draw_img);
+        cv::Rect roi_rect = getRoiRect(draw_img);
 
         // Draw tracker visualization
         if (draw_tracker) {
@@ -1140,6 +1260,14 @@ void InferDet::publishThread() {
                 }
 
                 cv::Scalar color = vehicle_colors[bbox.vehicle_color];
+                // ROI 区域画框分类：仅 ROI(from_roi)→绿；全图+ROI(both_roi)→橙；仅全图且中心在 ROI 内→蓝
+                if (bbox.from_roi) {
+                    color = cv::Scalar(0, 255, 0);
+                } else if (bbox.both_roi) {
+                    color = cv::Scalar(0, 165, 255);
+                } else if (!roi_rect.empty() && roi_rect.contains(cv::Point(r.x + r.width / 2, r.y + r.height / 2))) {
+                    color = cv::Scalar(255, 0, 0);
+                }
                 if (bbox.state == TrackState::Lost) {
                     for (int line_x = r.x; line_x < r.x + r.width; line_x += 8) {
                         cv::line(draw_img, cv::Point(line_x, r.y), cv::Point(std::min(line_x + 4, r.x + r.width), r.y), color, 2);
@@ -1169,6 +1297,8 @@ void InferDet::publishThread() {
             else if (ad.label == 3) label = "d";
             cv::putText(draw_img, label, cv::Point(r.x, r.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 3);
         }
+
+        savePubImg(draw_img);
 
         cv_bridge::CvImage brigeImg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", draw_img);
         pub_img.publish(brigeImg.toImageMsg());

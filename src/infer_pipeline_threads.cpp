@@ -55,13 +55,13 @@ void batch_preprocess_thread(int batch_size, int max_full) {
     // 必须限制完整帧 ≤ batch_size/2，否则总 batch 超过 engine 最大 batch，
     // 导致输入 device 缓冲（按 max batch 分配）被写越界 -> cudaMemcpyAsync invalid argument
     // 故对可配 max_full 做安全钳制：ROI 开时 ≤ batch_size/2，ROI 关时 ≤ batch_size。
-    // roi_active：全局开关开启，或任一相机在 camera_roi 中单独启用（per-camera 可覆盖全局关闭）
-    bool global_roi = static_cast<NvidiaPipeline*>(g_pipeline.get())->roiEnabled();
+    // roi_active：任一相机在 camera_roi 中单独启用（ROI 完全按相机配置，无全局开关）。
+    // 任一相机启用 ROI 时需把完整帧钳制到 ≤ batch_size/2，否则总 batch 超 engine 上限。
     bool any_per_cam_roi = false;
     for (const auto& c : g_camera_roi) {
         if (c.enabled) { any_per_cam_roi = true; break; }
     }
-    bool roi_active = global_roi || any_per_cam_roi;
+    bool roi_active = any_per_cam_roi;
     if (roi_active) {
         max_full = std::min(max_full, batch_size / 2);
     } else {
@@ -164,9 +164,8 @@ void batch_preprocess_thread(int batch_size, int max_full) {
 #if USE_NVIDIA
         // ROI 放大检测增强（方案A）：为每个完整帧追加一个 ROI 抠图槽位，混入同一 batch。
         // ROI 尺寸与左上角位置由 per-camera 配置决定（g_camera_roi，按 camera_id 索引），
-        // 未配置的相机回退到全局值。坐标为浅拷贝视图，映射回原图（offset_x/offset_y）在 post 阶段完成。
+        // 未匹配 camera_roi 的相机默认关闭。坐标为浅拷贝视图，映射回原图（offset_x/offset_y）在 post 阶段完成。
         {
-            auto* np = static_cast<NvidiaPipeline*>(g_pipeline.get());
             if (roi_active) {
                 size_t base_cnt = batch_frames.size();
                 std::vector<BatchFrameData> roi_slots;
@@ -174,12 +173,13 @@ void batch_preprocess_thread(int batch_size, int max_full) {
                 for (size_t i = 0; i < base_cnt; i++) {
                     const auto& fd = batch_frames[i];
                     if (fd.roi_parent_slot >= 0) continue;  // 只对完整帧生成 ROI
-                    // 取该相机的 ROI 配置（per-camera）；越界或未配置时回退到全局值
+                    // 取该相机的 ROI 配置（per-camera）；g_camera_roi 已对所有相机填充，
+                    // 未匹配 camera_roi 的相机 enabled=false（默认关），无全局 ROI 回退。
                     const CameraRoiConfig* rc = (fd.camera_id >= 0 && fd.camera_id < (int)g_camera_roi.size())
                                                     ? &g_camera_roi[fd.camera_id] : nullptr;
-                    bool enabled = rc ? rc->enabled : np->roiEnabled();
-                    float h_ratio = rc ? rc->height_ratio : np->roiHeightRatio();
-                    float w_ratio = rc ? rc->width_ratio : np->roiWidthRatio();
+                    bool enabled = rc ? rc->enabled : false;
+                    float h_ratio = rc ? rc->height_ratio : 0.5f;
+                    float w_ratio = rc ? rc->width_ratio : 0.5f;
                     float y_ratio = rc ? rc->y_ratio : 0.0f;
                     float x_ratio = rc ? rc->x_ratio : 0.5f;
                     if (!enabled) continue;  // 该相机未启用 ROI，不生成槽位

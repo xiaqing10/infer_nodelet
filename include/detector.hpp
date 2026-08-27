@@ -26,6 +26,7 @@ typedef struct DetectorRetData{
     int xmax;
     int ymax;
     bool from_roi = false;  // 该检测是否来自 ROI 增强裁剪（用于可视化区分）
+    bool both_roi = false;  // 该目标同时被全图和 ROI 检测到（NMS 合并时由跨来源重叠判定）
 }DetectorRetData;
 
 typedef struct DetectorRetDatas{
@@ -39,6 +40,7 @@ struct POINT_2D_S {
 class Detector{
 public:
     void init(std::string model, int device_id, int num_class, int stride);
+    void setThresholds(float conf_threshold, float nms_threshold);
     std::vector<DetectorRetData> inference(cv::Mat &img);
 
 private:

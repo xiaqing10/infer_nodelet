@@ -73,6 +73,8 @@ public:
 	bool color_lock = false; 
 	int vehicle_color = 0; // 颜色也要更新，防止部分颜色错误
 
+	bool both_roi = false; // 当前帧该目标同时被全图和 ROI 检测到
+	bool from_roi = false; // 当前帧该目标仅由 ROI 增强检测到（用于可视化区分）
 	std::string plate_number = "";
 	int plate_color = 0;
 	float plate_confid = 0;

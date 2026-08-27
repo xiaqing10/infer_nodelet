@@ -118,6 +118,8 @@ public:
 
     int Init(const std::string& model_path, int device_id = -1);
 
+    void setDetectThresholds(float conf, float nms) { confThreshold_ = conf; nmsThreshold_ = nms; }
+
     bool IsInitialized() const { return is_initialized_; }
     int GetDeviceId() const { return deviceId_; }
     const std::string& GetModelPath() const { return modelPath_; }

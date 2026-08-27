@@ -86,6 +86,9 @@ public:
     virtual int postProcess(InferResult& result) = 0;
 
     virtual int getBatchSize() const = 0;
+
+    // 检测置信度阈值与检测器 NMS IoU 阈值（由上层从 yaml 配置注入，需在 init 前调用）
+    virtual void setDetectThresholds(float conf_threshold, float nms_threshold) = 0;
 };
 
 #endif // BATCH_PIPELINE_BASE_H

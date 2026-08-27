@@ -71,6 +71,7 @@ public:
                      const std::vector<std::pair<float, float>>& ratios_batch,
                      std::vector<YoloV8BoxVec>& boxes);
     int Init(std::string bmodel_file );
+    void setDetectThresholds(float conf, float nms) { m_confThreshold = conf; m_nmsThreshold = nms; }
     int getOutputNum() const { return netinfo ? netinfo->output_num : 0; }
     bm_handle_t handle;
     int batch_size = -1;

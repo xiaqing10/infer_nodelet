@@ -15,6 +15,8 @@ public:
     int postProcess(InferResult& result) override;
     int getBatchSize() const override { return detector_.batch_size; }
 
+    void setDetectThresholds(float conf, float nms) override { detector_.setDetectThresholds(conf, nms); }
+
     YoloV8_det& getDetector() { return detector_; }
 
 private:

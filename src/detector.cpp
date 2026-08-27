@@ -10,6 +10,11 @@ void Detector::init(string model, int mlu_infer_device, int _num_class, int _str
     feature_stride = _stride;
 }
 
+void Detector::setThresholds(float conf_threshold, float nms_threshold) {
+    conf_thred = conf_threshold;
+    nms_thred = nms_threshold;
+}
+
 void Detector::yolov8_nms(std::vector<std::vector<float>>& boxes) {
     int length = boxes.size();
     int index = length - 1;
@@ -192,6 +197,10 @@ void Detector::init(std::string model, int device_id, int num_class, int stride)
     yolo_det.Init(model);
 }
 
+void Detector::setThresholds(float conf_threshold, float nms_threshold) {
+    yolo_det.setDetectThresholds(conf_threshold, nms_threshold);
+}
+
 std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
     std::vector<DetectorRetData> infer_result;
     int batch_size = yolo_det.batch_size;
@@ -233,6 +242,10 @@ void Detector::init(std::string model, int device_id, int num_class, int stride)
     yolo_det.Init(model, device_id);
 }
 
+void Detector::setThresholds(float conf_threshold, float nms_threshold) {
+    yolo_det.setDetectThresholds(conf_threshold, nms_threshold);
+}
+
 std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
     std::vector<DetectorRetData> infer_result;
     YoloV8BoxVec boxes;
@@ -258,6 +271,10 @@ void Detector::init(std::string model, int device_id, int num_class, int stride)
     (void)device_id;
     (void)stride;
     yolo_det.Init(model, num_class);
+}
+
+void Detector::setThresholds(float conf_threshold, float nms_threshold) {
+    yolo_det.setDetectThresholds(conf_threshold, nms_threshold);
 }
 
 std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {
@@ -289,6 +306,11 @@ void Detector::init(std::string model, int device_id, int num_class, int stride)
     if (num_class > 0) {
         yolo_det.m_class_num = num_class;
     }
+}
+
+void Detector::setThresholds(float conf_threshold, float nms_threshold) {
+    yolo_det.m_confThreshold = conf_threshold;
+    yolo_det.m_nmsThreshold = nms_threshold;
 }
 
 std::vector<DetectorRetData> Detector::inference(cv::Mat &img) {

@@ -3,6 +3,9 @@ use_shm: false
 det_engine_name: /home/files/rvf/share/infer_nodelet/model/dh-20251017.cambricon
 #det_engine_name: /home/files/rvf/share/infer_nodelet/model/m9-20251106.cambricon
 abandon_engine_name: /home/files/rvf/share/infer_nodelet/model/abandon.cambricon
+# 检测置信度阈值（过滤得分低于该值的框）与检测器 NMS IoU 阈值
+conf_threshold: 0.25
+nms_threshold: 0.5
 vechile_color_rate: 15  # 车型检测的频率
 abandon_rate: 15  # 抛洒物检测的频率
 min_points_len: 40 # 轨迹保存的最小长度
